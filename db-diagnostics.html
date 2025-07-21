@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Database Diagnostics - Todo P2P</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+        
+        h1, h2 {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 14px;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(45deg, #4CAF50, #45a049);
+            color: white;
+        }
+        
+        .btn-warning {
+            background: linear-gradient(45deg, #ff9800, #e68900);
+            color: white;
+        }
+        
+        .btn-danger {
+            background: linear-gradient(45deg, #f44336, #da190b);
+            color: white;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .status {
+            text-align: center;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            font-weight: bold;
+        }
+        
+        .status.loading {
+            background: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }
+        
+        .status.healthy {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4caf50;
+        }
+        
+        .status.degraded {
+            background: rgba(255, 152, 0, 0.2);
+            color: #ff9800;
+        }
+        
+        .status.critical {
+            background: rgba(244, 67, 54, 0.2);
+            color: #f44336;
+        }
+        
+        .report {
+            margin-top: 20px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .check-item {
+            margin: 15px 0;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .check-item.healthy {
+            background: rgba(76, 175, 80, 0.1);
+        }
+        
+        .check-item.degraded {
+            background: rgba(255, 152, 0, 0.1);
+        }
+        
+        .check-item.error {
+            background: rgba(244, 67, 54, 0.1);
+        }
+        
+        .check-item.missing {
+            background: rgba(156, 39, 176, 0.1);
+        }
+        
+        .check-title {
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+        
+        .check-details {
+            font-size: 0.9em;
+            opacity: 0.8;
+            margin-bottom: 8px;
+        }
+        
+        .check-errors {
+            color: #ffcdd2;
+            font-size: 0.85em;
+        }
+        
+        .recommendations {
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(33, 150, 243, 0.1);
+            border-radius: 8px;
+            border: 1px solid rgba(33, 150, 243, 0.3);
+        }
+        
+        .recommendations ul {
+            margin: 0;
+            padding-left: 20px;
+        }
+        
+        .log {
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        pre {
+            white-space: pre-wrap;
+            margin: 0;
+        }
+        
+        .clear-log {
+            text-align: right;
+            margin-bottom: 10px;
+        }
+        
+        .clear-log button {
+            padding: 6px 12px;
+            font-size: 12px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏥 Database Diagnostics</h1>
+        <p style="text-align: center; opacity: 0.8;">Comprehensive health check for Helia/OrbitDB components</p>
+        
+        <div class="controls">
+            <button id="runHealthCheck" class="btn-primary">🔍 Run Health Check</button>
+            <button id="testOrbitDB" style="background: linear-gradient(45deg, #2196F3, #0d7377); color: white;">🧪 Test OrbitDB</button>
+            <button id="runHealthCheckAndRecover" class="btn-warning">🔧 Check & Recover</button>
+            <button id="forceReset" class="btn-danger">💥 Force Reset</button>
+            <button id="clearStorage" class="btn-warning">🧹 Clear Storage</button>
+        </div>
+        
+        <div id="status" class="status loading">
+            🏗️ Initialize the database to run diagnostics
+        </div>
+        
+        <div id="report" class="report" style="display: none;">
+            <!-- Health report will be displayed here -->
+        </div>
+        
+        <div class="log">
+            <div class="clear-log">
+                <button onclick="clearLog()">Clear Log</button>
+            </div>
+            <pre id="log"></pre>
+        </div>
+    </div>
+
+    <script type="module">
+        // Import the health check functions
+        import { 
+            runDatabaseHealthCheck, 
+            runDatabaseHealthCheckAndRecover, 
+            forceResetDatabase,
+            testOrbitDBOperations,
+            initializeP2P 
+        } from './src/lib/p2p.js'
+        
+        let isRunning = false
+        
+        // UI Elements
+        const statusEl = document.getElementById('status')
+        const reportEl = document.getElementById('report')
+        const logEl = document.getElementById('log')
+        const buttons = {
+            healthCheck: document.getElementById('runHealthCheck'),
+            testOrbitDB: document.getElementById('testOrbitDB'),
+            recover: document.getElementById('runHealthCheckAndRecover'),
+            reset: document.getElementById('forceReset'),
+            clearStorage: document.getElementById('clearStorage')
+        }
+        
+        // Override console.log to show in UI
+        const originalLog = console.log
+        const originalError = console.error
+        const originalWarn = console.warn
+        
+        function logToUI(level, ...args) {
+            const timestamp = new Date().toLocaleTimeString()
+            const message = args.map(arg => 
+                typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+            ).join(' ')
+            
+            const logLine = `[${timestamp}] ${level}: ${message}\n`
+            logEl.textContent += logLine
+            logEl.scrollTop = logEl.scrollHeight
+            
+            // Also log to original console
+            if (level === 'ERROR') originalError(...args)
+            else if (level === 'WARN') originalWarn(...args)
+            else originalLog(...args)
+        }
+        
+        console.log = (...args) => logToUI('LOG', ...args)
+        console.error = (...args) => logToUI('ERROR', ...args)  
+        console.warn = (...args) => logToUI('WARN', ...args)
+        
+        // Clear log function
+        window.clearLog = function() {
+            logEl.textContent = ''
+        }
+        
+        // Update button states
+        function setButtonsEnabled(enabled) {
+            Object.values(buttons).forEach(btn => {
+                btn.disabled = !enabled
+            })
+            isRunning = !enabled
+        }
+        
+        // Update status display
+        function updateStatus(status, message) {
+            statusEl.className = `status ${status}`
+            statusEl.textContent = message
+        }
+        
+        // Display health report
+        function displayHealthReport(report) {
+            const reportHtml = `
+                <h3>Health Report - ${report.timestamp}</h3>
+                <div class="status ${report.overall}">
+                    Overall Status: ${report.overall.toUpperCase()}
+                </div>
+                
+                <div class="checks">
+                    ${Object.entries(report.checks).map(([name, check]) => `
+                        <div class="check-item ${check.status}">
+                            <div class="check-title">
+                                ${getCheckIcon(check.status)} ${name.toUpperCase()}
+                            </div>
+                            <div class="check-details">
+                                Status: ${check.status}
+                                ${Object.keys(check.details).length > 0 ? 
+                                    `<br>Details: ${JSON.stringify(check.details)}` : ''}
+                            </div>
+                            ${check.errors.length > 0 ? 
+                                `<div class="check-errors">
+                                    Errors: ${check.errors.join(', ')}
+                                </div>` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+                
+                ${report.recommendations.length > 0 ? `
+                    <div class="recommendations">
+                        <h4>🎯 Recommendations</h4>
+                        <ul>
+                            ${report.recommendations.map(rec => `<li>${rec}</li>`).join('')}
+                        </ul>
+                    </div>
+                ` : ''}
+                
+                ${report.errors.length > 0 ? `
+                    <div class="recommendations" style="border-color: #f44336; background: rgba(244, 67, 54, 0.1);">
+                        <h4>❌ All Errors</h4>
+                        <ul>
+                            ${report.errors.map(err => `<li>${err}</li>`).join('')}
+                        </ul>
+                    </div>
+                ` : ''}
+            `
+            
+            reportEl.innerHTML = reportHtml
+            reportEl.style.display = 'block'
+        }
+        
+        function getCheckIcon(status) {
+            switch(status) {
+                case 'healthy': return '✅'
+                case 'degraded': return '⚠️'
+                case 'error': return '❌'
+                case 'missing': return '🔍'
+                case 'stopped': return '⏹️'
+                case 'warning': return '⚠️'
+                default: return '❓'
+            }
+        }
+        
+        // Event Listeners
+        buttons.healthCheck.addEventListener('click', async () => {
+            if (isRunning) return
+            
+            setButtonsEnabled(false)
+            updateStatus('loading', '🔍 Running health check...')
+            
+            try {
+                // First ensure P2P is initialized
+                console.log('Initializing P2P for health check...')
+                await initializeP2P()
+                
+                console.log('Running database health check...')
+                const report = await runDatabaseHealthCheck()
+                
+                displayHealthReport(report)
+                updateStatus(report.overall, `Health check complete: ${report.overall}`)
+                
+            } catch (error) {
+                console.error('Health check failed:', error)
+                updateStatus('critical', `❌ Health check failed: ${error.message}`)
+            }
+            
+            setButtonsEnabled(true)
+        })
+        
+        buttons.testOrbitDB.addEventListener('click', async () => {
+            if (isRunning) return
+            
+            setButtonsEnabled(false)
+            updateStatus('loading', '🧪 Testing OrbitDB operations...')
+            
+            try {
+                // First ensure P2P is initialized
+                console.log('Initializing P2P for OrbitDB test...')
+                await initializeP2P()
+                
+                console.log('Running OrbitDB operations test...')
+                const result = await testOrbitDBOperations()
+                
+                if (result.success) {
+                    updateStatus('healthy', `✅ OrbitDB test successful: ${result.message}`)
+                    console.log('🎉 OrbitDB test passed:', result)
+                } else {
+                    updateStatus('critical', `❌ OrbitDB test failed: ${result.error}`)
+                    console.error('❌ OrbitDB test failed:', result)
+                }
+                
+            } catch (error) {
+                console.error('OrbitDB test failed:', error)
+                updateStatus('critical', `❌ OrbitDB test failed: ${error.message}`)
+            }
+            
+            setButtonsEnabled(true)
+        })
+        
+        buttons.recover.addEventListener('click', async () => {
+            if (isRunning) return
+            
+            setButtonsEnabled(false)
+            updateStatus('loading', '🔧 Running health check with recovery...')
+            
+            try {
+                // First ensure P2P is initialized
+                console.log('Initializing P2P for health check and recovery...')
+                await initializeP2P()
+                
+                console.log('Running database health check with recovery...')
+                const result = await runDatabaseHealthCheckAndRecover({ aggressive: false })
+                
+                displayHealthReport(result.healthReport)
+                
+                if (result.recoveryActions.length > 0) {
+                    console.log('Recovery actions taken:', result.recoveryActions)
+                }
+                
+                if (result.needsFullReset) {
+                    updateStatus('critical', '❌ Critical issues found - manual reset recommended')
+                } else {
+                    updateStatus(result.healthReport.overall, 
+                        `Recovery complete: ${result.healthReport.overall}`)
+                }
+                
+            } catch (error) {
+                console.error('Health check and recovery failed:', error)
+                updateStatus('critical', `❌ Recovery failed: ${error.message}`)
+            }
+            
+            setButtonsEnabled(true)
+        })
+        
+        buttons.reset.addEventListener('click', async () => {
+            if (isRunning) return
+            
+            if (!confirm('⚠️ This will reset ALL database components. Are you sure?')) {
+                return
+            }
+            
+            setButtonsEnabled(false)
+            updateStatus('loading', '💥 Force resetting database...')
+            
+            try {
+                console.log('Force resetting all database components...')
+                await forceResetDatabase()
+                
+                updateStatus('healthy', '✅ Database reset complete')
+                reportEl.style.display = 'none'
+                
+            } catch (error) {
+                console.error('Force reset failed:', error)
+                updateStatus('critical', `❌ Reset failed: ${error.message}`)
+            }
+            
+            setButtonsEnabled(true)
+        })
+        
+        buttons.clearStorage.addEventListener('click', () => {
+            if (!confirm('⚠️ This will clear all browser storage. Are you sure?')) {
+                return
+            }
+            
+            try {
+                // Clear localStorage
+                if (window.localStorage) {
+                    const keysBefore = Object.keys(localStorage).length
+                    localStorage.clear()
+                    console.log(`Cleared ${keysBefore} localStorage keys`)
+                }
+                
+                // Clear sessionStorage
+                if (window.sessionStorage) {
+                    const keysBefore = Object.keys(sessionStorage).length
+                    sessionStorage.clear()
+                    console.log(`Cleared ${keysBefore} sessionStorage keys`)
+                }
+                
+                updateStatus('healthy', '🧹 Browser storage cleared')
+                
+            } catch (error) {
+                console.error('Failed to clear storage:', error)
+                updateStatus('critical', `❌ Storage clear failed: ${error.message}`)
+            }
+        })
+        
+        // Initialize
+        console.log('Database Diagnostics loaded')
+        console.log('Click "Run Health Check" to diagnose your database')
+    </script>
+</body>
+</html>

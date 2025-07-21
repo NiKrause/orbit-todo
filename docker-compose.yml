@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  relay:
+    build:
+      context: ./relay
+      dockerfile: Dockerfile
+    environment:
+      - RELAY_PEER_ID=${RELAY_PEER_ID}
+      - RELAY_WS_PORT=${RELAY_WS_PORT:-4001}
+      - RELAY_TCP_PORT=${RELAY_TCP_PORT:-4002}
+    ports:
+      - "${RELAY_WS_PORT:-4001}:4001"
+      - "${RELAY_TCP_PORT:-4002}:4002"
+    restart: unless-stopped
+    networks:
+      - p2p-network
+
+networks:
+  p2p-network:
+    driver: bridge
