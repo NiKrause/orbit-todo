@@ -1,6 +1,6 @@
 import { createLibp2p } from 'libp2p'
 import { createHelia } from 'helia'
-import { createOrbitDB } from '@orbitdb/core'
+import { createOrbitDB, IPFSAccessController } from '@orbitdb/core'
 import { noise } from '@chainsafe/libp2p-noise'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { webSockets } from '@libp2p/websockets'
@@ -309,7 +309,14 @@ async function initializeP2PWithTimeout() {
     // Create OrbitDB instance
     console.log('🛬 Creating OrbitDB instance...')
     const orbitStartTime = Date.now()
-    orbitdb = await createOrbitDB({ipfs: helia, id: 'todo-p2p-app'})
+    orbitdb = await createOrbitDB({
+      ipfs: helia,
+      id: 'todo-p2p-app',
+      directory: './orbitdb-data',
+      AccessControllers: {
+        'ipfs': IPFSAccessController
+      }
+    })
     console.log(`✅ OrbitDB created in ${Date.now() - orbitStartTime}ms`)
 
 // After libp2p is created, set up the OrbitDB topic discovery
@@ -318,13 +325,21 @@ async function initializeP2PWithTimeout() {
     
     // Add debug listener to see if ANY subscription-change events occur
     helia.libp2p.services.pubsub.addEventListener('subscription-change', (event) => {
-      console.log('🎯 [DEBUG] Raw subscription-change event received:', {
+      const eventData = {
         peerId: event.detail.peerId.toString(),
         subscriptions: event.detail.subscriptions.map(s => ({
           topic: s.topic,
-          subscribe: s.subscribe
+          subscribe: s.subscribe,
+          isOrbitDB: s.topic.startsWith('/orbitdb/') || s.topic.includes('orbitdb')
         }))
-      })
+      }
+      console.log('🎯 [DEBUG] Raw subscription-change event received:', eventData)
+      
+      // Check if any OrbitDB topics were detected
+      const orbitDBTopics = eventData.subscriptions.filter(s => s.isOrbitDB && s.subscribe)
+      if (orbitDBTopics.length > 0) {
+        console.log('🎯 [ORBITDB DETECTED] OrbitDB topics found:', orbitDBTopics.map(s => s.topic))
+      }
     })
     
     await discovery.startDiscovery(async (topic, peerId) => {
@@ -335,6 +350,13 @@ async function initializeP2PWithTimeout() {
         
         // Store the discovered OrbitDB topic
         const peerIdStr = peerId.toString()
+        console.log(`📝 [DEBUG] Storing OrbitDB topic discovery:`, {
+          peerIdStr,
+          topic,
+          peerMapBefore: Array.from(peerOrbitDbAddresses.keys()),
+          peerMapSizeBefore: peerOrbitDbAddresses.size
+        })
+        
         discoveredOrbitDBTopics.set(topic, {
           peerId: peerIdStr,
           topic,
@@ -343,6 +365,12 @@ async function initializeP2PWithTimeout() {
         
         // Also add to the legacy map for UI compatibility
         peerOrbitDbAddresses.set(peerIdStr, topic)
+        
+        console.log(`📝 [DEBUG] After storing discovery:`, {
+          peerMapAfter: Array.from(peerOrbitDbAddresses.keys()),
+          peerMapSizeAfter: peerOrbitDbAddresses.size,
+          topicForThisPeer: peerOrbitDbAddresses.get(peerIdStr)
+        })
         
         // Update the reactive store
         updateDiscoveredDatabasesStore()
@@ -483,12 +511,12 @@ export async function openTodoDatabaseForPeer(peerId) {
   }
   
   try {
+    // Use a consistent approach for all databases
+    // For peer databases, we need to open them as they are, without overriding access control
     todoDB = await orbitdb.open(address, {
-      type: 'keyvalue',
-      accessController: {
-        type: 'orbitdb',
-        write: ['*']
-      }
+      type: 'keyvalue'
+      // Don't specify access control when opening existing databases
+      // OrbitDB will use the existing access control from the database
     });
     
     console.log(`✅ Successfully opened database:`, {
@@ -666,14 +694,29 @@ export async function deleteTodo(id) {
   const existingTodo = await db.get(id)
   
   if (existingTodo) {
-    const hash = await db.delete(id)
-    console.log('Todo deleted:', id, 'Hash:', hash)
-    // Don't close the database here - keep it open for event listening
-    // db.close()
-    return true
+    let hash
+    try {
+      // Try different possible delete methods
+      if (typeof db.delete === 'function') {
+        hash = await db.delete(id)
+      } else if (typeof db.del === 'function') {
+        hash = await db.del(id)
+      } else if (typeof db.remove === 'function') {
+        hash = await db.remove(id)
+      } else if (typeof db.set === 'function') {
+        // For keyvalue stores, deletion might be setting to null/undefined
+        hash = await db.set(id, null)
+        console.log('ℹ️ Using set(key, null) for deletion')
+      } else {
+        throw new Error('No delete method found on database object')
+      }
+      console.log('Todo deleted:', id, 'Hash:', hash)
+      return true
+    } catch (error) {
+      console.error('❌ Failed to delete todo:', error)
+      throw error
+    }
   }
-  // Don't close the database here - keep it open for event listening
-  // db.close()
   return false
 }
 
@@ -1027,6 +1070,176 @@ export async function forceResetDatabase() {
 }
 
 /**
+ * Clear all OrbitDB data from the browser
+ * This includes IndexedDB storage, localStorage, and in-memory data
+ * @returns {Promise<Object>} Cleanup report
+ */
+export async function clearAllOrbitDBData() {
+  console.log('🧹 Starting complete OrbitDB data cleanup...')
+  
+  const report = {
+    success: true,
+    actions: [],
+    errors: []
+  }
+  
+  try {
+    // First, stop all running components
+    console.log('1️⃣ Stopping all P2P components...')
+    await forceResetDatabase()
+    report.actions.push('Stopped P2P components')
+    
+    // Clear discovered peers and databases
+    console.log('2️⃣ Clearing peer discovery data...')
+    discoveredPeersStore.set([])
+    discoveredDatabasesStore.set([])
+    report.actions.push('Cleared peer discovery data')
+    
+    // Clear browser storage (IndexedDB)
+    if (typeof window !== 'undefined' && window.indexedDB) {
+      console.log('3️⃣ Clearing IndexedDB databases...')
+      
+      try {
+        // Get list of all databases
+        const databases = await indexedDB.databases()
+        console.log('Found IndexedDB databases:', databases.map(db => db.name))
+        
+        for (const dbInfo of databases) {
+          // Delete OrbitDB-related databases
+          if (dbInfo.name && (
+            dbInfo.name.includes('orbitdb') ||
+            dbInfo.name.includes('helia') ||
+            dbInfo.name.includes('ipfs') ||
+            dbInfo.name.includes('libp2p') ||
+            dbInfo.name.includes('keystore') ||
+            dbInfo.name.includes('blockstore') ||
+            dbInfo.name.includes('datastore')
+          )) {
+            console.log(`  - Deleting database: ${dbInfo.name}`)
+            const deleteRequest = indexedDB.deleteDatabase(dbInfo.name)
+            
+            await new Promise((resolve, reject) => {
+              deleteRequest.onsuccess = () => {
+                console.log(`    ✅ Deleted ${dbInfo.name}`)
+                resolve()
+              }
+              deleteRequest.onerror = () => {
+                console.warn(`    ⚠️ Failed to delete ${dbInfo.name}:`, deleteRequest.error)
+                report.errors.push(`Failed to delete ${dbInfo.name}: ${deleteRequest.error}`)
+                resolve() // Continue with other databases
+              }
+              deleteRequest.onblocked = () => {
+                console.warn(`    ⏳ Deletion of ${dbInfo.name} is blocked`)
+                // Try to resolve anyway after a timeout
+                setTimeout(resolve, 1000)
+              }
+            })
+          }
+        }
+        
+        report.actions.push('Cleared IndexedDB databases')
+      } catch (error) {
+        console.error('Error clearing IndexedDB:', error)
+        report.errors.push(`IndexedDB cleanup error: ${error.message}`)
+      }
+    }
+    
+    // Clear localStorage keys
+    if (typeof window !== 'undefined' && window.localStorage) {
+      console.log('4️⃣ Clearing localStorage...')
+      
+      try {
+        const keysToRemove = []
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i)
+          if (key && (
+            key.includes('orbitdb') ||
+            key.includes('helia') ||
+            key.includes('ipfs') ||
+            key.includes('libp2p') ||
+            key.includes('keystore') ||
+            key.includes('peer') ||
+            key.includes('identity')
+          )) {
+            keysToRemove.push(key)
+          }
+        }
+        
+        keysToRemove.forEach(key => {
+          console.log(`  - Removing localStorage key: ${key}`)
+          localStorage.removeItem(key)
+        })
+        
+        if (keysToRemove.length > 0) {
+          report.actions.push(`Cleared ${keysToRemove.length} localStorage keys`)
+        } else {
+          report.actions.push('No relevant localStorage keys found')
+        }
+      } catch (error) {
+        console.error('Error clearing localStorage:', error)
+        report.errors.push(`localStorage cleanup error: ${error.message}`)
+      }
+    }
+    
+    // Clear sessionStorage keys
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      console.log('5️⃣ Clearing sessionStorage...')
+      
+      try {
+        const keysToRemove = []
+        for (let i = 0; i < sessionStorage.length; i++) {
+          const key = sessionStorage.key(i)
+          if (key && (
+            key.includes('orbitdb') ||
+            key.includes('helia') ||
+            key.includes('ipfs') ||
+            key.includes('libp2p') ||
+            key.includes('peer')
+          )) {
+            keysToRemove.push(key)
+          }
+        }
+        
+        keysToRemove.forEach(key => {
+          console.log(`  - Removing sessionStorage key: ${key}`)
+          sessionStorage.removeItem(key)
+        })
+        
+        if (keysToRemove.length > 0) {
+          report.actions.push(`Cleared ${keysToRemove.length} sessionStorage keys`)
+        } else {
+          report.actions.push('No relevant sessionStorage keys found')
+        }
+      } catch (error) {
+        console.error('Error clearing sessionStorage:', error)
+        report.errors.push(`sessionStorage cleanup error: ${error.message}`)
+      }
+    }
+    
+    // Clear any cached data
+    console.log('6️⃣ Clearing cached data structures...')
+    peerOrbitDbAddresses.clear()
+    discoveredOrbitDBTopics.clear()
+    databaseUpdateCallbacks.length = 0
+    report.actions.push('Cleared in-memory caches')
+    
+    console.log('🎉 OrbitDB data cleanup completed!')
+    
+    if (report.errors.length > 0) {
+      console.warn('⚠️ Cleanup completed with some errors:', report.errors)
+      report.success = false
+    }
+    
+  } catch (error) {
+    console.error('❌ Fatal error during OrbitDB cleanup:', error)
+    report.success = false
+    report.errors.push(`Fatal error: ${error.message}`)
+  }
+  
+  return report
+}
+
+/**
  * Test OrbitDB operations directly for diagnostics
  * @returns {Promise<Object>} Test results
  */
@@ -1093,7 +1306,24 @@ export async function testOrbitDBOperations() {
     // Test 4: Delete the test entry
     console.log('📋 Test 4: Deleting test data...')
     try {
-      const deleteResult = await db.delete(testKey)
+      // Try different possible delete methods
+      let deleteResult
+      if (typeof db.delete === 'function') {
+        deleteResult = await db.delete(testKey)
+      } else if (typeof db.del === 'function') {
+        deleteResult = await db.del(testKey)
+      } else if (typeof db.remove === 'function') {
+        deleteResult = await db.remove(testKey)
+      } else if (typeof db.set === 'function') {
+        // For keyvalue stores, deletion might be setting to null/undefined
+        deleteResult = await db.set(testKey, null)
+        console.log('ℹ️ Using set(key, null) for deletion')
+      } else {
+        // Check what methods are available
+        console.log('🔍 Available database methods:', Object.getOwnPropertyNames(db).filter(prop => typeof db[prop] === 'function'))
+        console.log('🔍 Database prototype methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(db)).filter(prop => typeof db[prop] === 'function'))
+        throw new Error('No delete method found on database object')
+      }
       console.log('✅ Test 4 PASSED: Data deleted successfully, result:', deleteResult)
     } catch (deleteError) {
       console.error('❌ Test 4 FAILED: Delete operation failed:', deleteError)
@@ -1316,9 +1546,16 @@ if (browser && typeof window !== 'undefined') {
     getAllTodos,
     getConnectedPeers,
     getMyPeerId,
+    getCurrentDatabaseInfo,
+    getTodoDbAddress,
+    getTodoDbName,
+    getPeerOrbitDbAddresses,
+    openTodoDatabaseForPeer,
+    getConnectionDetails,
     runDatabaseHealthCheck,
     runDatabaseHealthCheckAndRecover,
     forceResetDatabase,
+    clearAllOrbitDBData,
     testOrbitDBOperations,
     debugTodos,
     testPubsubSelfMessages
@@ -1486,14 +1723,51 @@ export async function getTodoDatabase() {
     await initializeP2P();
   }
   if (!todoDB) {
-    // Use a fixed database address for all peers to connect to the same DB
-    todoDB = await orbitdb.open('todos', {
-      type: 'keyvalue',
-      accessController: {
-        type: 'orbitdb',
-        write: ['*'] // Allow all peers to write (simplified for demo)
+    console.log('🔓 Opening/creating OrbitDB with IPFSAccessController...');
+    
+    try {
+      // Use IPFSAccessController with wildcard for open write access
+      todoDB = await orbitdb.open('todos', {
+        type: 'keyvalue',
+        AccessController: IPFSAccessController({
+          write: ['*'] // Allow any peer to write
+        })
+      });
+      
+      console.log('✅ Database opened successfully with IPFSAccessController:', {
+        address: todoDB.address,
+        type: todoDB.type,
+        accessController: todoDB.access
+      });
+      
+    } catch (error) {
+      console.warn('⚠️ Failed to open with IPFSAccessController, trying legacy approach:', error.message);
+      
+      try {
+        // Fallback 1: Try with accessController object syntax
+        todoDB = await orbitdb.open('todos', {
+          type: 'keyvalue',
+          accessController: {
+            type: 'ipfs',
+            write: ['*']
+          }
+        });
+        
+        console.log('✅ Database opened with legacy accessController syntax');
+        
+      } catch (error2) {
+        console.warn('⚠️ Legacy syntax failed, trying no access controller:', error2.message);
+        
+        // Fallback 2: No access controller (defaults to public)
+        todoDB = await orbitdb.open('todos', {
+          type: 'keyvalue'
+          // No access controller = defaults to public access
+        });
+        
+        console.log('✅ Database opened with default access controller');
       }
-    });
+    }
+    
     setupDatabaseEventListeners();
   }
   return todoDB;

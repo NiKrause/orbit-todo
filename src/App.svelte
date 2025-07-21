@@ -33,6 +33,7 @@ getPeerOrbitDbAddresses,
   let dbName = null
   let selectedPeerId = '';
   let peerOrbitDbAddresses = new Map();
+  let cleanupDatabaseListener = null;
 
   function showToast(message) {
     toastMessage = message;
@@ -96,7 +97,14 @@ getPeerOrbitDbAddresses,
 
       // Listen for OrbitDB address updates
       function handleOrbitDbAddressUpdate(e) {
+        console.log('📝 [UI DEBUG] OrbitDB address update event:', e.detail);
+        const oldMap = new Map(peerOrbitDbAddresses);
         peerOrbitDbAddresses = getPeerOrbitDbAddresses();
+        console.log('📝 [UI DEBUG] Peer OrbitDB map update:', {
+          before: Array.from(oldMap.entries()),
+          after: Array.from(peerOrbitDbAddresses.entries()),
+          size: peerOrbitDbAddresses.size
+        });
         const { peerId, topic: dbAddress } = e.detail || {};
         // Only show toast if it's not our own peerId
         if (peerId && peerId !== myPeerId) {
@@ -162,15 +170,67 @@ getPeerOrbitDbAddresses,
 
   async function handlePeerDbSwitch() {
     try {
-      await openTodoDatabaseForPeer(selectedPeerId);
-      todos = await getAllTodos();
-      dbAddress = getTodoDbAddress();
-      dbName = getTodoDbName();
-      peers = await getConnectedPeers();
-      peerOrbitDbAddresses = getPeerOrbitDbAddresses();
-      showToast(selectedPeerId ? `Switched to peer's DB` : 'Switched to default DB');
+      console.log('🔄 Starting database switch to:', selectedPeerId || 'default');
+      
+      // Show loading state during switch
+      const wasLoading = loading;
+      loading = true;
+      
+      try {
+        // Step 1: Switch to the new database
+        console.log('📍 Opening database for peer:', selectedPeerId);
+        await openTodoDatabaseForPeer(selectedPeerId);
+        
+        // Step 2: Wait a moment for database to initialize
+        console.log('⏳ Waiting for database to initialize...');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Step 3: Update database info
+        dbAddress = getTodoDbAddress();
+        dbName = getTodoDbName();
+        console.log('📊 Database info updated:', { address: dbAddress, name: dbName });
+        
+        // Step 4: Fetch todos from the new database
+        console.log('📋 Fetching todos from new database...');
+        const newTodos = await getAllTodos();
+        todos = newTodos;
+        console.log('✅ Loaded', newTodos.length, 'todos from new database');
+        
+        // Step 5: Update other state
+        peers = await getConnectedPeers();
+        peerOrbitDbAddresses = getPeerOrbitDbAddresses();
+        
+        // Step 6: Re-setup database event listeners for reactive updates
+        console.log('🔄 Re-setting up database event listeners...');
+        if (cleanupDatabaseListener) {
+          cleanupDatabaseListener();
+        }
+        cleanupDatabaseListener = onDatabaseUpdate((eventType, eventData) => {
+          console.log('📝 Database update received:', eventType, eventData);
+          // Refresh todos when database updates
+          getAllTodos().then(refreshedTodos => {
+            todos = refreshedTodos;
+            console.log('🔄 Todos refreshed after database update:', refreshedTodos.length);
+          }).catch(err => {
+            console.error('Error refreshing todos after database update:', err);
+          });
+        });
+        
+        showToast(selectedPeerId ? 
+          `Switched to ${formatPeerId(selectedPeerId)}'s DB (${newTodos.length} todos)` : 
+          `Switched to default DB (${newTodos.length} todos)`);
+        
+        console.log('✅ Database switch completed successfully');
+        
+      } finally {
+        // Always restore loading state
+        loading = wasLoading;
+      }
+      
     } catch (err) {
+      console.error('❌ Database switch failed:', err);
       error = err.message;
+      loading = false;
     }
   }
 </script>
@@ -195,10 +255,15 @@ getPeerOrbitDbAddresses,
     >
       <option value="">My DB (default)</option>
       {#each peers as { peerId }}
+        <!-- Debug logging in template -->
+        {console.log('📝 [DROPDOWN DEBUG] Checking peer:', peerId, 'Has OrbitDB address:', !!peerOrbitDbAddresses.get(peerId), 'Address:', peerOrbitDbAddresses.get(peerId))}
         {#if peerOrbitDbAddresses.get(peerId)}
           <option value={peerId}>
             {formatPeerId(peerId)}... (…{peerOrbitDbAddresses.get(peerId).slice(-5)})
           </option>
+        {:else}
+          <!-- Show debug option for peers without OrbitDB address -->
+          <!-- <option value={peerId} disabled>{formatPeerId(peerId)}... (no OrbitDB address)</option> -->
         {/if}
       {/each}
     </select>

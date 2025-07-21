@@ -44,28 +44,96 @@ You can preview the production build with `npm run preview`.
 1. **Interactive Diagnostics Interface**: Open `db-diagnostics.html` in your browser
 2. **Built-in Debug Commands**: Available in browser console when app is running
 3. **Health Check System**: Comprehensive database and network diagnostics
+4. **Comprehensive Test Suite**: Full OrbitDB operation testing
+5. **P2P Network Diagnostics**: Pubsub and peer connection testing
+6. **Complete Data Cleanup**: Nuclear option for clearing all data
 
-### Quick Diagnostics
+### 🛠️ Console Debug Functions
+
+Once your app is running (`npm run dev`), open the browser console (F12) and use these functions:
+
+#### Database Diagnostics
+```javascript
+// 🐛 Debug current todos and database state
+await debugTodos()
+
+// 🧪 Run comprehensive OrbitDB operations test
+await testOrbitDB()
+
+// 🏥 Run health check on all P2P components
+await healthCheck()
+
+// 🔧 Run health check with automatic recovery
+await healthRecover()
+```
+
+#### Data Management
+```javascript
+// 🔄 Force reset all database components (soft reset)
+await resetDB()
+
+// 🧹 Nuclear option: Clear ALL OrbitDB data from browser
+// This clears IndexedDB, localStorage, sessionStorage, and in-memory data
+await window.app.clearAllOrbitDBData()
+
+// 📊 Get current database information
+window.app.getCurrentDatabaseInfo()
+
+// 📍 Get current database address
+window.app.getTodoDbAddress()
+```
+
+#### P2P Network Testing
+```javascript
+// 🧪 Test pubsub self-message functionality
+await testPubsub()
+
+// 🔍 Debug pubsub configuration and state
+debugPubsub()
+
+// 📡 Test basic pubsub without self-messages
+await testBasicPubsub()
+
+// 🌐 Test OrbitDB topic subscription discovery
+await testOrbitDBTopicSubscription()
+
+// 👥 Get connected peers information
+await window.app.getConnectedPeers()
+
+// 🆔 Get your peer ID
+window.app.getMyPeerId()
+```
+
+#### Advanced Debugging
+```javascript
+// 🔍 Check subscription change event listeners
+debugSubscriptionListeners()
+
+// 📊 Get detailed connection information
+window.app.getConnectionDetails()
+
+// 🗺️ Get peer OrbitDB address mappings
+window.app.getPeerOrbitDbAddresses()
+
+// 🔄 Open database for specific peer
+await window.app.openTodoDatabaseForPeer('peer-id-here')
+```
+
+### Quick Diagnostics Workflow
 
 #### Step 1: Start Your App
 ```bash
 npm run dev
 ```
 
-#### Step 2: Open Browser Console (F12) and Run:
-
+#### Step 2: Basic Health Check
 ```javascript
 // Check if app is loaded
 console.log('App available:', !!window.app)
 
-// Run comprehensive todo diagnostics
+// Run comprehensive diagnostics
 await debugTodos()
-
-// Check raw todo data
-await window.app.getAllTodos()
-
-// Run full health check
-await window.app.runDatabaseHealthCheck()
+await healthCheck()
 ```
 
 #### Step 3: Inspect Browser Storage
@@ -150,22 +218,79 @@ Created By: "12D3K...AbCdE"   ← First 5 chars of PeerId
 ✅ Todo appears healthy
 ```
 
+### 🧹 Complete Data Cleanup (Nuclear Option)
+
+If you need to completely start fresh and clear all P2P data:
+
+```javascript
+// This will clear EVERYTHING: IndexedDB, localStorage, sessionStorage, and in-memory data
+const report = await window.app.clearAllOrbitDBData()
+console.log('Cleanup report:', report)
+```
+
+**What this clears:**
+- All IndexedDB databases (orbitdb, helia, ipfs, libp2p, keystore, blockstore, datastore)
+- All localStorage keys containing: orbitdb, helia, ipfs, libp2p, keystore, peer, identity
+- All sessionStorage keys containing: orbitdb, helia, ipfs, libp2p, peer
+- All in-memory peer discovery data and database caches
+- All running P2P components (gracefully stopped)
+
+**Expected output:**
+```javascript
+🧹 Starting complete OrbitDB data cleanup...
+1️⃣ Stopping all P2P components...
+2️⃣ Clearing peer discovery data...
+3️⃣ Clearing IndexedDB databases...
+  - Deleting database: orbitdb-keystore
+  - Deleting database: helia-datastore
+  - Deleting database: helia-blockstore
+4️⃣ Clearing localStorage...
+  - Removing localStorage key: libp2p-relay-discovery
+5️⃣ Clearing sessionStorage...
+6️⃣ Clearing cached data structures...
+🎉 OrbitDB data cleanup completed!
+
+// Returns cleanup report:
+{
+  success: true,
+  actions: [
+    "Stopped P2P components",
+    "Cleared peer discovery data", 
+    "Cleared IndexedDB databases",
+    "Cleared 3 localStorage keys",
+    "No relevant sessionStorage keys found",
+    "Cleared in-memory caches"
+  ],
+  errors: []
+}
+```
+
 ### Emergency Recovery
 
-If your database is completely corrupted:
+#### Option 1: Soft Reset (Recommended)
+```javascript
+// Reset P2P components but keep some cached data
+await resetDB()
+// Then refresh the page
+location.reload()
+```
 
-1. **Clear everything**:
-   ```javascript
-   localStorage.clear()
-   sessionStorage.clear()
-   ```
+#### Option 2: Complete Cleanup (Nuclear)
+```javascript
+// Clear absolutely everything
+await window.app.clearAllOrbitDBData()
+// Then refresh the page
+location.reload()
+```
 
-2. **Force reset**:
-   ```javascript
-   await window.app.forceResetDatabase()
-   ```
-
-3. **Refresh page** and try again
+#### Option 3: Manual Cleanup (Emergency)
+```javascript
+// If functions don't work, clear manually
+localStorage.clear()
+sessionStorage.clear()
+// Then refresh the page
+location.reload()
+```
 
 ### Getting Help
 
