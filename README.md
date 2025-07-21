@@ -37,6 +37,302 @@ You can preview the production build with `npm run preview`.
 
 > To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
 
+## 🌐 Deploying the Relay Server
+
+The Todo P2P app requires a libp2p relay server for peers to discover and connect to each other. Here's how to deploy it to a public server.
+
+### Prerequisites
+
+- A public server (VPS, cloud instance, etc.)
+- Node.js 22+ installed
+- Port 4001 accessible from the internet
+- Optional: Docker installed
+
+### Method 1: Direct Deployment (Without Docker)
+
+#### 1. Prepare Your Server
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Node.js 22 (if not already installed)
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Verify installation
+node --version  # Should be 22.x.x
+npm --version
+```
+
+#### 2. Deploy the Application
+```bash
+# Clone your repository
+git clone https://github.com/your-username/todo-p2p.git
+cd todo-p2p
+
+# Install dependencies
+npm install
+
+# Create a production environment file
+cp .env.example .env
+# Edit .env if needed
+```
+
+#### 3. Configure Firewall
+```bash
+# Allow port 4001 (relay server port)
+sudo ufw allow 4001
+
+# If using a cloud provider, also configure security groups
+# to allow TCP traffic on port 4001
+```
+
+#### 4. Run the Relay Server
+```bash
+# Test run (foreground)
+npm run relay
+
+# Production run with PM2 (recommended)
+npm install -g pm2
+pm2 start relay/relay.js --name "todo-p2p-relay"
+pm2 save
+pm2 startup  # Follow the instructions to auto-start on reboot
+```
+
+#### 5. Verify Deployment
+```bash
+# Check if relay is running
+netstat -tlnp | grep :4001
+
+# Check PM2 status
+pm2 status
+
+# View logs
+pm2 logs todo-p2p-relay
+```
+
+### Method 2: Docker Deployment
+
+#### 1. Create Dockerfile
+Create a `Dockerfile` in your project root:
+
+```dockerfile
+FROM node:22-alpine
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Copy application code
+COPY relay/ ./relay/
+COPY .env* ./
+
+# Expose port
+EXPOSE 4001
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S relay -u 1001
+USER relay
+
+# Start the relay server
+CMD ["node", "relay/relay.js"]
+```
+
+#### 2. Create Docker Compose (Optional)
+Create `docker-compose.yml`:
+
+```yaml
+version: '3.8'
+services:
+  todo-p2p-relay:
+    build: .
+    ports:
+      - "4001:4001"
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:4001/health', (res) => process.exit(res.statusCode === 200 ? 0 : 1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+```
+
+#### 3. Deploy with Docker
+```bash
+# Build and run
+docker-compose up -d
+
+# Or with plain Docker
+docker build -t todo-p2p-relay .
+docker run -d --name todo-p2p-relay -p 4001:4001 --restart unless-stopped todo-p2p-relay
+
+# Check status
+docker-compose ps
+docker logs todo-p2p-relay
+```
+
+### Updating Your App Configuration
+
+Once your relay server is deployed, update your app configuration:
+
+#### 1. Update the Relay Address
+In `src/lib/p2p.js`, change the relay address:
+
+```javascript
+// Replace localhost with your server's IP or domain
+const RELAY_BOOTSTRAP_ADDR = '/ip4/YOUR_SERVER_IP/tcp/4001/ws/p2p/12D3KooW...'
+
+// Or use a domain name
+const RELAY_BOOTSTRAP_ADDR = '/dns4/your-domain.com/tcp/4001/ws/p2p/12D3KooW...'
+```
+
+#### 2. Update Test Configuration
+In `tests/node/manual.test.js` and `tests/node/bob.test.js`:
+
+```javascript
+const RELAY_MULTIADDR = '/ip4/YOUR_SERVER_IP/tcp/4001/ws/p2p/12D3KooW...'
+```
+
+#### 3. Get Your Relay's Peer ID
+When the relay starts, it will log its Peer ID:
+
+```bash
+# Check relay logs to get the Peer ID
+npm run relay
+# or
+pm2 logs todo-p2p-relay
+# or
+docker logs todo-p2p-relay
+
+# Look for output like:
+# 🚀 Relay server started
+# 📡 Relay PeerId: 12D3KooWAJjbRkp8FPF5MKgMU53aUTxWkqvDrs4zc1VMbwRwfsbE
+# 🔍 Listening on: /ip4/0.0.0.0/tcp/4001/ws
+```
+
+### Security Considerations
+
+#### 1. Firewall Configuration
+```bash
+# Only allow necessary ports
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow ssh
+sudo ufw allow 4001
+sudo ufw enable
+```
+
+#### 2. HTTPS/WSS (Advanced)
+For production, consider using HTTPS/WSS:
+
+```javascript
+// In relay/relay.js, add TLS configuration
+const server = createLibp2p({
+  // ... existing config
+  addresses: {
+    listen: [
+      '/ip4/0.0.0.0/tcp/4001/ws',
+      '/ip4/0.0.0.0/tcp/4002/wss'  // Add WSS support
+    ]
+  }
+  // Add TLS certificates configuration
+})
+```
+
+#### 3. Rate Limiting
+Consider implementing rate limiting to prevent abuse:
+
+```bash
+# Install fail2ban
+sudo apt install fail2ban
+
+# Configure rate limiting rules
+# (Implementation depends on your specific needs)
+```
+
+### Monitoring and Maintenance
+
+#### Health Checks
+```bash
+# Simple health check script
+curl -f http://your-server:4001/health || echo "Relay server is down!"
+
+# Add to crontab for automated monitoring
+*/5 * * * * curl -f http://your-server:4001/health || /usr/bin/systemctl restart todo-p2p-relay
+```
+
+#### Logs Management
+```bash
+# With PM2
+pm2 logs --lines 50
+pm2 flush  # Clear logs
+
+# With Docker
+docker logs --tail 50 todo-p2p-relay
+docker logs --follow todo-p2p-relay  # Live logs
+```
+
+#### Updates
+```bash
+# Direct deployment
+cd todo-p2p
+git pull origin main
+npm install
+pm2 restart todo-p2p-relay
+
+# Docker deployment
+git pull origin main
+docker-compose down
+docker-compose build
+docker-compose up -d
+```
+
+### Troubleshooting Deployment
+
+#### Common Issues
+
+**Port 4001 not accessible:**
+```bash
+# Check if process is running
+netstat -tlnp | grep :4001
+
+# Check firewall
+sudo ufw status
+
+# Check if bound to correct interface
+ss -tlnp | grep :4001
+```
+
+**Relay server crashes:**
+```bash
+# Check system resources
+free -h
+df -h
+
+# Check Node.js version
+node --version  # Should be 22+
+
+# Check logs for errors
+pm2 logs todo-p2p-relay --lines 100
+```
+
+**Peers can't connect:**
+```bash
+# Verify relay peer ID in app configuration
+# Check network connectivity
+telnet your-server-ip 4001
+
+# Test WebSocket connection
+# Use browser console: new WebSocket('ws://your-server-ip:4001')
+```
+
 ## 🔍 Diagnostics & Troubleshooting
 
 ### Available Diagnostic Tools

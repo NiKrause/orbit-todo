@@ -44,6 +44,52 @@ getPeerOrbitDbAddresses,
   }
 
   onMount(async () => {
+    function updatePeerTransports(peerId, newTransport) {
+      const peer = peers.find(p => p.peerId === peerId);
+      if (peer) {
+        // If the transport does not exist, add it
+        if (!peer.transports.includes(newTransport)) {
+          peer.transports.push(newTransport);
+        }
+        // Remove 'circuit-relay' if we have 'webrtc'
+        if (newTransport === 'webrtc') {
+          peer.transports = peer.transports.filter(type => type !== 'circuit-relay');
+        }
+        peers = [...peers]; // Trigger reactivity
+      }
+    }
+
+    // Set up periodic peer transport updates to catch WebRTC upgrades
+    let peerUpdateInterval;
+    function startPeerTransportMonitoring() {
+      peerUpdateInterval = setInterval(async () => {
+        const updatedPeers = await getConnectedPeers();
+        let hasChanges = false;
+        
+        // Check if any peer's transports have changed
+        for (const updatedPeer of updatedPeers) {
+          const existingPeer = peers.find(p => p.peerId === updatedPeer.peerId);
+          if (existingPeer) {
+            // Compare transport arrays
+            const existingTransports = existingPeer.transports.sort().join(',');
+            const newTransports = updatedPeer.transports.sort().join(',');
+            
+            if (existingTransports !== newTransports) {
+              console.log(`🔄 Transport change detected for ${formatPeerId(updatedPeer.peerId)}:`, {
+                before: existingPeer.transports,
+                after: updatedPeer.transports
+              });
+              hasChanges = true;
+            }
+          }
+        }
+        
+        if (hasChanges || updatedPeers.length !== peers.length) {
+          console.log('🔄 Updating peer list due to transport or connection changes');
+          peers = updatedPeers;
+        }
+      }, 2000); // Check every 2 seconds for transport upgrades
+    }
     try {
       await initializeP2P()
       todos = await getAllTodos()
@@ -79,10 +125,12 @@ getPeerOrbitDbAddresses,
         getConnectedPeers().then(p => peers = p)
       }
 
-      function handlePeerConnected(e) {
-        updatePeers();
-        console.log("handlePeerConnected",e.detail)
+function handlePeerConnected(e) {
         const peerId = e.detail?.peerId || 'unknown';
+        const newTransport = e.detail?.transport || '';
+        updatePeerTransports(peerId, newTransport);
+        updatePeers();
+        console.log("handlePeerConnected",e.detail);
         showToast(`Peer connected: ${formatPeerId(peerId)}`);
       }
 
@@ -115,6 +163,9 @@ getPeerOrbitDbAddresses,
       // Initial fetch
       peerOrbitDbAddresses = getPeerOrbitDbAddresses();
 
+      // Start periodic peer transport monitoring
+      startPeerTransportMonitoring();
+      
       loading = false
     } catch (err) {
       error = err.message
@@ -123,6 +174,10 @@ getPeerOrbitDbAddresses,
 
     // Clean up on destroy
     return () => {
+      if (peerUpdateInterval) {
+        clearInterval(peerUpdateInterval);
+        console.log('🧹 Cleared peer transport monitoring interval');
+      }
       window.removeEventListener('p2p-peer-connected', handlePeerConnected);
       window.removeEventListener('p2p-peer-disconnected', handlePeerDisconnected);
       window.removeEventListener('orbitdb-database-discovered', handleOrbitDbAddressUpdate);

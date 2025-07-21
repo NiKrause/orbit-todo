@@ -16,7 +16,8 @@ import { dcutr } from '@libp2p/dcutr'
 import { autoNAT } from '@libp2p/autonat'
 import { config } from 'dotenv'
 import express from 'express'
-import util from 'util'
+import { tls } from '@libp2p/tls'
+import { uPnPNAT } from '@libp2p/upnp-nat'
 
 // Load environment variables
 config()
@@ -93,11 +94,15 @@ const server = await createLibp2p({
   connectionGater: {
       denyDialMultiaddr: () => false
   },
-  connectionEncrypters: [noise()],
+  connectionEncrypters: [tls(), noise()],
   streamMuxers: [yamux()],
+  nat: {
+    enabled: true,
+    description: 'libp2p-relay'
+  },
   services: {
     ping: ping(),
-    autonat: autoNAT(),
+    autoNAT: autoNAT(),
     dcutr: dcutr(),
     identify: identify(),
     pubsub: gossipsub({
@@ -113,6 +118,7 @@ const server = await createLibp2p({
         opportunisticGraftThreshold: 0
       },
     }),
+    uPnPNAT: uPnPNAT(),
     relay: circuitRelayServer({
       reservations: {
         maxReservations: 5000,
