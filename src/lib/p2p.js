@@ -13,7 +13,6 @@ import { autoNAT } from '@libp2p/autonat'
 import { gossipsub } from '@chainsafe/libp2p-gossipsub'
 import { pubsubPeerDiscovery } from '@libp2p/pubsub-peer-discovery'
 import { bootstrap } from '@libp2p/bootstrap'
-import { multiaddr } from '@multiformats/multiaddr'
 import { privateKeyFromProtobuf } from '@libp2p/crypto/keys'
 import { fromString as uint8ArrayFromString } from 'uint8arrays/from-string'
 import * as filters from '@libp2p/websockets/filters'
@@ -22,6 +21,9 @@ import { LevelBlockstore } from 'blockstore-level';
 import { RelayDiscovery } from '../utils/relay-discovery.js'
 import { runHealthCheck, runHealthCheckAndRecover } from '../utils/db-health-check.js'
 import { writable } from 'svelte/store'
+import { OrbitDBTopicDiscovery } from '../../orbitdb-discovery.js'
+import { Multiaddr } from 'multiaddr';
+
 export const discoveredPeersStore = writable([]) // or Set, but array is easier for Svelte
 
 const browser = typeof window !== 'undefined'
@@ -34,6 +36,20 @@ let relayDiscovery = null
 
 // Bootstrap relay address
 const RELAY_BOOTSTRAP_ADDR = '/ip4/127.0.0.1/tcp/4001/ws/p2p/12D3KooWAJjbRkp8FPF5MKgMU53aUTxWkqvDrs4zc1VMbwRwfsbE'
+
+// If you have multiple bootstrap addresses, use an array
+const BOOTSTRAP_ADDRS = [RELAY_BOOTSTRAP_ADDR];
+// Extract peer IDs from bootstrap addresses
+const BOOTSTRAP_PEER_IDS = BOOTSTRAP_ADDRS.map(addr => {
+  try {
+    const ma = new Multiaddr(addr);
+    const peerIdStr = ma.getPeerId();
+    return peerIdStr;
+  } catch (e) {
+    return null;
+  }
+}).filter(Boolean);
+
 
 /**
  * Set up peer discovery event handlers and auto-dialing
@@ -160,7 +176,10 @@ function setupPeerDiscoveryHandlers(node) {
           address: addr
         }
       }))
-  })
+
+    // OrbitDB topic discovery is now handled automatically via pubsub subscription monitoring
+
+});
   
   // Handle disconnections
   node.addEventListener('peer:disconnect', (event) => {
@@ -270,13 +289,8 @@ async function initializeP2PWithTimeout() {
         dcutr: dcutr(),
         autonat: autoNAT(),
         pubsub: gossipsub({
-          allowPublishToZeroTopicPeers: true,
-          canRelayMessage: true,
-          emitSelf: false,
-          gossipIncoming: true,
-          fallbackToFloodsub: true,
-          floodPublish: true,
-          doPX: false // Disable peer exchange to avoid data validation issues
+          emitSelf: true, // Enable to see our own messages
+          allowPublishToZeroTopicPeers: true
         })
       }
     })
@@ -297,6 +311,65 @@ async function initializeP2PWithTimeout() {
     const orbitStartTime = Date.now()
     orbitdb = await createOrbitDB({ipfs: helia, id: 'todo-p2p-app'})
     console.log(`✅ OrbitDB created in ${Date.now() - orbitStartTime}ms`)
+
+// After libp2p is created, set up the OrbitDB topic discovery
+    console.log('🔍 Setting up OrbitDB topic discovery...')
+    const discovery = new OrbitDBTopicDiscovery(helia)
+    
+    // Add debug listener to see if ANY subscription-change events occur
+    helia.libp2p.services.pubsub.addEventListener('subscription-change', (event) => {
+      console.log('🎯 [DEBUG] Raw subscription-change event received:', {
+        peerId: event.detail.peerId.toString(),
+        subscriptions: event.detail.subscriptions.map(s => ({
+          topic: s.topic,
+          subscribe: s.subscribe
+        }))
+      })
+    })
+    
+    await discovery.startDiscovery(async (topic, peerId) => {
+      console.log(`🎯 [DISCOVERY] Automatically subscribing to discovered OrbitDB topic: ${topic} from peer: ${peerId}`)
+      try {
+        await helia.libp2p.services.pubsub.subscribe(topic)
+        console.log(`✅ Successfully subscribed to OrbitDB topic: ${topic}`)
+        
+        // Store the discovered OrbitDB topic
+        const peerIdStr = peerId.toString()
+        discoveredOrbitDBTopics.set(topic, {
+          peerId: peerIdStr,
+          topic,
+          discoveredAt: new Date().toISOString()
+        })
+        
+        // Also add to the legacy map for UI compatibility
+        peerOrbitDbAddresses.set(peerIdStr, topic)
+        
+        // Update the reactive store
+        updateDiscoveredDatabasesStore()
+        
+        // Dispatch event for UI updates
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('orbitdb-database-discovered', {
+            detail: { peerId: peerIdStr, topic, address: topic }
+          }))
+        }
+      } catch (error) {
+        console.error(`❌ Failed to subscribe to OrbitDB topic ${topic}:`, error)
+      }
+    })
+
+    // Optionally, handle messages from topics
+    await discovery.enableAutoSubscribe(async (event) => {
+      const { topic, from, data } = event.detail
+      console.log(`📩 [ORBITDB] Received message on topic ${topic} from ${from}:`, new TextDecoder().decode(data))
+    })
+    
+    console.log('✅ OrbitDB topic discovery configured')
+    // setupOrbitDbAddressListener();
+    
+    // Open the database immediately so we can announce our address to peers
+    await getTodoDatabase();
+    
 
     console.log(`🎉 P2P initialized successfully in ${Date.now() - startTime}ms! PeerId:`, libp2p.peerId.toString())
     
@@ -336,29 +409,102 @@ export async function initializeP2P() {
 // Store database event callbacks globally so they persist across function calls
 let databaseUpdateCallbacks = []
 
-export async function getTodoDatabase() {
-  if (!orbitdb) {
-    await initializeP2P()
+// Map to store peerId -> OrbitDB address
+const peerOrbitDbAddresses = new Map();
+
+// Map to store discovered OrbitDB topics -> discovery info
+const discoveredOrbitDBTopics = new Map();
+
+// Store for reactive updates to discovered databases
+export const discoveredDatabasesStore = writable([])
+
+/**
+ * Update the reactive store with discovered database information
+ */
+function updateDiscoveredDatabasesStore() {
+  const databases = Array.from(discoveredOrbitDBTopics.values())
+  discoveredDatabasesStore.set(databases)
+}
+
+/**
+ * Get the map of peer OrbitDB addresses for UI consumption
+ * @returns {Map} Map of peerId -> OrbitDB address
+ */
+export function getPeerOrbitDbAddresses() {
+  return new Map(peerOrbitDbAddresses)
+}
+
+/**
+ * Get information about the currently active database
+ * @returns {Object} Current database information
+ */
+export function getCurrentDatabaseInfo() {
+  if (!todoDB) {
+    return { active: false, address: null, name: null, type: null }
   }
   
-  if (!todoDB) {
-    console.log("opening db")
-    // Use a fixed database address for all peers to connect to the same DB
-    todoDB = await orbitdb.open('/orbitdb/zdpuAyi5F5hrKKbqbHQ6wwFcs4eoEfbCNaSUuibKoFDosbbQJ' , {
+  return {
+    active: true,
+    address: todoDB.address?.toString?.() || null,
+    name: todoDB.dbName || null,
+    type: todoDB.type || null,
+    opened: todoDB.opened || false
+  }
+}
+
+// Export a function to open a selected peer's OrbitDB address
+export async function openTodoDatabaseForPeer(peerId) {
+  if (!orbitdb) {
+    await initializeP2P();
+  }
+  
+  console.log(`🔄 Switching to database for peer: ${peerId || 'default'}`)
+  
+  // Close the current database if it exists
+  if (todoDB) {
+    try {
+      console.log(`🗂️ Closing current database: ${todoDB.address}`)
+      await todoDB.close()
+      todoDB = null
+    } catch (error) {
+      console.warn('Error closing current database:', error)
+    }
+  }
+  
+  let address;
+  if (peerId && peerOrbitDbAddresses.has(peerId)) {
+    // Use the discovered OrbitDB address for this peer
+    address = peerOrbitDbAddresses.get(peerId);
+    console.log(`📍 Opening peer's database with address: ${address}`)
+  } else {
+    // fallback to default name 'todos'
+    address = 'todos';
+    console.log(`📍 Opening default database with name: ${address}`)
+  }
+  
+  try {
+    todoDB = await orbitdb.open(address, {
       type: 'keyvalue',
       accessController: {
         type: 'orbitdb',
-        write: ['*'] // Allow all peers to write (simplified for demo)
+        write: ['*']
       }
-    })
-
-    console.log('Todo database opened at:', todoDB.address)
+    });
     
-    // Set up database event listeners
+    console.log(`✅ Successfully opened database:`, {
+      address: todoDB.address,
+      name: todoDB.dbName,
+      type: todoDB.type
+    })
+    
+    // Set up event listeners for the new database
     setupDatabaseEventListeners()
+    
+    return todoDB;
+  } catch (error) {
+    console.error(`❌ Failed to open database for peer ${peerId}:`, error)
+    throw error
   }
-
-  return todoDB
 }
 
 /**
@@ -1026,6 +1172,141 @@ export function getTodoDbName() {
   return todoDB?.dbName || null
 }
 
+/**
+ * Test pubsub self-message visibility in browser
+ */
+export async function testPubsubSelfMessages() {
+  if (!libp2p) {
+    console.warn('❌ libp2p not initialized yet. Please wait for P2P initialization to complete.');
+    return;
+  }
+  
+  console.log('🧪 Testing pubsub self-message visibility...');
+  
+  // Enhanced diagnostics
+  const pubsubService = libp2p.services.pubsub;
+  const connections = libp2p.getConnections();
+  
+  console.log('📊 Detailed pubsub state:', {
+    peerId: libp2p.peerId.toString(),
+    subscriptions: Array.from(pubsubService.subscriptions),
+    connectedPeers: connections.length,
+    peerConnections: connections.map(c => ({
+      peer: c.remotePeer.toString(),
+      status: c.status,
+      direction: c.stat?.direction || 'unknown',
+      address: c.remoteAddr?.toString() || 'unknown'
+    })),
+    pubsubType: pubsubService.constructor.name,
+    started: pubsubService.started,
+    topics: pubsubService.getTopics ? pubsubService.getTopics() : 'N/A',
+    peers: pubsubService.getPeers ? pubsubService.getPeers() : 'N/A'
+  });
+  
+  // Check gossipsub internals if available
+  try {
+    if (pubsubService.mesh) {
+      console.log('🕸️ Gossipsub mesh info:', {
+        meshTopics: Array.from(pubsubService.mesh.keys()),
+        fanout: pubsubService.fanout ? Array.from(pubsubService.fanout.keys()) : [],
+        gossip: pubsubService.gossip ? Array.from(pubsubService.gossip.keys()) : []
+      });
+    }
+  } catch (e) {
+    console.log('⚠️ Could not access gossipsub internals:', e.message);
+  }
+  
+  let messageCount = 0;
+  const receivedMessages = [];
+  
+  // Subscribe to test topic with logging
+  const testTopic = 'pubsub-self-test';
+  console.log(`📡 Subscribing to topic: ${testTopic}`);
+  
+  const messageHandler = (msg) => {
+    messageCount++;
+    const raw = new TextDecoder().decode(msg.data);
+    const myPeerId = libp2p.peerId.toString();
+    
+    console.log(`📩 [${messageCount}] Message received on ${testTopic}:`, {
+      from: msg.from,
+      topic: msg.topic,
+      data: raw,
+      isSelf: msg.from === myPeerId,
+      myPeerId
+    });
+    
+    receivedMessages.push({
+      from: msg.from,
+      topic: msg.topic,
+      data: raw,
+      isSelf: msg.from === myPeerId,
+      timestamp: Date.now()
+    });
+    
+    if (msg.from === myPeerId) {
+      console.log('🎯 SELF-MESSAGE detected! emitSelf is working!');
+    }
+  };
+  
+  libp2p.services.pubsub.subscribe(testTopic, messageHandler);
+  
+  // Wait a moment for subscription to register
+  await new Promise(resolve => setTimeout(resolve, 500));
+  
+  // Publish test messages
+  console.log('📤 Publishing test messages...');
+  
+  for (let i = 1; i <= 3; i++) {
+    const message = JSON.stringify({
+      test: i,
+      timestamp: new Date().toISOString(),
+      peerId: libp2p.peerId.toString(),
+      message: `Test message ${i}`
+    });
+    
+    console.log(`📤 Publishing message ${i}...`);
+    await libp2p.services.pubsub.publish(testTopic, uint8ArrayFromString(message));
+    
+    // Small delay between messages
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  
+  // Wait for message delivery
+  console.log('⏳ Waiting for message delivery...');
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  
+  // Results summary
+  const selfMessages = receivedMessages.filter(m => m.isSelf);
+  const otherMessages = receivedMessages.filter(m => !m.isSelf);
+  
+  console.log('📊 TEST RESULTS:');
+  console.log(`  - Messages published: 3`);
+  console.log(`  - Messages received: ${messageCount}`);
+  console.log(`  - Self-messages received: ${selfMessages.length}`);
+  console.log(`  - Other-messages received: ${otherMessages.length}`);
+  
+  if (selfMessages.length === 3) {
+    console.log('✅ SUCCESS: All self-messages received! emitSelf is working correctly.');
+  } else if (selfMessages.length > 0) {
+    console.log('⚠️  PARTIAL: Some self-messages received, but not all.');
+  } else {
+    console.log('❌ PROBLEM: No self-messages received. emitSelf might not be working.');
+  }
+  
+  // Cleanup
+  libp2p.services.pubsub.unsubscribe(testTopic, messageHandler);
+  console.log('🧹 Test complete, unsubscribed from test topic.');
+  
+  return {
+    published: 3,
+    received: messageCount,
+    selfMessages: selfMessages.length,
+    otherMessages: otherMessages.length,
+    success: selfMessages.length === 3
+  };
+}
+
 // Expose API for Playwright tests
 if (browser && typeof window !== 'undefined') {
   window.app = {
@@ -1039,7 +1320,8 @@ if (browser && typeof window !== 'undefined') {
     runDatabaseHealthCheckAndRecover,
     forceResetDatabase,
     testOrbitDBOperations,
-    debugTodos
+    debugTodos,
+    testPubsubSelfMessages
   }
   
   // Also expose debug functions globally for easy console access
@@ -1048,4 +1330,171 @@ if (browser && typeof window !== 'undefined') {
   window.healthCheck = runDatabaseHealthCheck
   window.healthRecover = runDatabaseHealthCheckAndRecover
   window.resetDB = forceResetDatabase
+  window.testPubsub = testPubsubSelfMessages
+  window.debugPubsub = () => {
+    if (!libp2p) {
+      console.log('❌ libp2p not initialized');
+      return;
+    }
+    const pubsub = libp2p.services.pubsub;
+    console.log('🔍 PUBSUB DEBUG INFO:');
+    console.log('  - PeerId:', libp2p.peerId.toString());
+    console.log('  - Pubsub started:', pubsub.started);
+    console.log('  - Subscriptions:', Array.from(pubsub.subscriptions));
+    console.log('  - Connected peers:', libp2p.getConnections().length);
+    console.log('  - Pubsub peers:', pubsub.getPeers ? pubsub.getPeers() : 'N/A');
+    console.log('  - Topics:', pubsub.getTopics ? pubsub.getTopics() : 'N/A');
+    
+    if (pubsub.mesh) {
+      console.log('  - Mesh topics:', Array.from(pubsub.mesh.keys()));
+      console.log('  - Fanout topics:', pubsub.fanout ? Array.from(pubsub.fanout.keys()) : []);
+      
+      // Check mesh peers for each topic
+      for (const [topic, peers] of pubsub.mesh) {
+        console.log(`  - Mesh peers for '${topic}':`, peers ? Array.from(peers).map(p => p.toString()) : 'none');
+      }
+    }
+    
+    // Try to access emitSelf setting
+    try {
+      console.log('  - emitSelf setting:', pubsub.emitSelf);
+    } catch (e) {
+      console.log('  - emitSelf setting: not accessible');
+    }
+    
+    // Try to access gossipsub configuration
+    try {
+      console.log('  - Gossipsub config:', {
+        allowPublishToZeroTopicPeers: pubsub.allowPublishToZeroTopicPeers,
+        canRelayMessage: pubsub.canRelayMessage,
+        gossipIncoming: pubsub.gossipIncoming,
+        fallbackToFloodsub: pubsub.fallbackToFloodsub,
+        floodPublish: pubsub.floodPublish
+      });
+    } catch (e) {
+      console.log('  - Gossipsub config: not accessible', e.message);
+    }
+  }
+  
+  // Test basic pubsub publish/subscribe without self-messages first
+  window.testBasicPubsub = async () => {
+    if (!libp2p) {
+      console.warn('❌ libp2p not initialized yet.');
+      return;
+    }
+    
+    console.log('🧪 Testing basic pubsub (without emitSelf)...');
+    const pubsub = libp2p.services.pubsub;
+    const testTopic = 'basic-pubsub-test';
+    let messageCount = 0;
+    
+    const messageHandler = (msg) => {
+      messageCount++;
+      const raw = new TextDecoder().decode(msg.data);
+      console.log(`📩 Basic test message received:`, {
+        from: msg.from,
+        topic: msg.topic,
+        data: raw,
+        messageCount
+      });
+    };
+    
+    // Subscribe
+    pubsub.subscribe(testTopic, messageHandler);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // Check if topic is in mesh
+    console.log('🔍 Topic subscription status:');
+    console.log('  - Subscribed topics:', Array.from(pubsub.subscriptions));
+    console.log('  - Mesh topics:', pubsub.mesh ? Array.from(pubsub.mesh.keys()) : 'N/A');
+    
+    // Try publishing without emitSelf expectation
+    console.log('📤 Publishing to basic test topic...');
+    await pubsub.publish(testTopic, uint8ArrayFromString(JSON.stringify({
+      test: 'basic-test',
+      timestamp: new Date().toISOString(),
+      peerId: libp2p.peerId.toString()
+    })));
+    
+    // Wait and report
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log(`📊 Basic test result: ${messageCount} messages received`);
+    
+    // Cleanup
+    pubsub.unsubscribe(testTopic, messageHandler);
+    
+    return { messageCount, success: messageCount > 0 };
+  }
+  
+  // Test OrbitDB-like topic to trigger discovery
+  window.testOrbitDBTopicSubscription = async () => {
+    if (!libp2p) {
+      console.warn('❌ libp2p not initialized yet.');
+      return;
+    }
+    
+    console.log('🧪 Testing OrbitDB-like topic subscription...');
+    const pubsub = libp2p.services.pubsub;
+    const orbitTopic = '/orbitdb/zdpuTest1234567890123456789012345678901234567890';
+    
+    console.log(`📡 Subscribing to OrbitDB-like topic: ${orbitTopic}`);
+    
+    const messageHandler = (msg) => {
+      console.log(`📩 Message received on OrbitDB topic:`, {
+        from: msg.from,
+        topic: msg.topic,
+        data: new TextDecoder().decode(msg.data)
+      });
+    };
+    
+    // Subscribe to OrbitDB-like topic (this should trigger discovery)
+    await pubsub.subscribe(orbitTopic, messageHandler);
+    
+    console.log('✅ Subscribed to OrbitDB-like topic. Check console for discovery events.');
+    
+    return { topic: orbitTopic, subscribed: true };
+  }
+  
+  // Check subscription change event listeners
+  window.debugSubscriptionListeners = () => {
+    if (!libp2p) {
+      console.warn('❌ libp2p not initialized yet.');
+      return;
+    }
+    
+    const pubsub = libp2p.services.pubsub;
+    console.log('🔍 SUBSCRIPTION EVENT LISTENERS DEBUG:');
+    console.log('  - Pubsub instance:', pubsub);
+    console.log('  - Event listeners:', pubsub.listenerCount ? pubsub.listenerCount('subscription-change') : 'Cannot check');
+    
+    // Try to see if events are supported
+    try {
+      console.log('  - Event emitter methods:', {
+        addEventListener: typeof pubsub.addEventListener,
+        removeEventListener: typeof pubsub.removeEventListener,
+        on: typeof pubsub.on,
+        emit: typeof pubsub.emit
+      });
+    } catch (e) {
+      console.log('  - Error checking event methods:', e.message);
+    }
+  }
+}
+// Restore getTodoDatabase export
+export async function getTodoDatabase() {
+  if (!orbitdb) {
+    await initializeP2P();
+  }
+  if (!todoDB) {
+    // Use a fixed database address for all peers to connect to the same DB
+    todoDB = await orbitdb.open('todos', {
+      type: 'keyvalue',
+      accessController: {
+        type: 'orbitdb',
+        write: ['*'] // Allow all peers to write (simplified for demo)
+      }
+    });
+    setupDatabaseEventListeners();
+  }
+  return todoDB;
 }

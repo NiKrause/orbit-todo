@@ -12,7 +12,10 @@
     getRelayDiscoveryStatus,
     formatPeerId,
     getTodoDbAddress,
-    getTodoDbName
+    getTodoDbName,
+getPeerOrbitDbAddresses,
+    openTodoDatabaseForPeer,
+    getCurrentDatabaseInfo
   } from './lib/p2p.js'
 
   let todos = []
@@ -28,6 +31,8 @@
   let toastTimeout;
   let dbAddress = null
   let dbName = null
+  let selectedPeerId = '';
+  let peerOrbitDbAddresses = new Map();
 
   function showToast(message) {
     toastMessage = message;
@@ -89,6 +94,19 @@
       window.addEventListener('p2p-peer-connected', handlePeerConnected);
       window.addEventListener('p2p-peer-disconnected', handlePeerDisconnected);
 
+      // Listen for OrbitDB address updates
+      function handleOrbitDbAddressUpdate(e) {
+        peerOrbitDbAddresses = getPeerOrbitDbAddresses();
+        const { peerId, topic: dbAddress } = e.detail || {};
+        // Only show toast if it's not our own peerId
+        if (peerId && peerId !== myPeerId) {
+          showToast(`Received OrbitDB address from peer: ${formatPeerId(peerId)}`);
+        }
+      }
+      window.addEventListener('orbitdb-database-discovered', handleOrbitDbAddressUpdate);
+      // Initial fetch
+      peerOrbitDbAddresses = getPeerOrbitDbAddresses();
+
       loading = false
     } catch (err) {
       error = err.message
@@ -99,6 +117,7 @@
     return () => {
       window.removeEventListener('p2p-peer-connected', handlePeerConnected);
       window.removeEventListener('p2p-peer-disconnected', handlePeerDisconnected);
+      window.removeEventListener('orbitdb-database-discovered', handleOrbitDbAddressUpdate);
     }
   })
 
@@ -140,6 +159,20 @@
       error = err.message
     }
   }
+
+  async function handlePeerDbSwitch() {
+    try {
+      await openTodoDatabaseForPeer(selectedPeerId);
+      todos = await getAllTodos();
+      dbAddress = getTodoDbAddress();
+      dbName = getTodoDbName();
+      peers = await getConnectedPeers();
+      peerOrbitDbAddresses = getPeerOrbitDbAddresses();
+      showToast(selectedPeerId ? `Switched to peer's DB` : 'Switched to default DB');
+    } catch (err) {
+      error = err.message;
+    }
+  }
 </script>
 
 {#if toastMessage}
@@ -150,6 +183,29 @@
 
 <main class="container mx-auto p-6 max-w-4xl">
   <h1 class="text-3xl font-bold mb-6 text-center">P2P TODO List</h1>
+
+  <!-- Peer OrbitDB Selection Dropdown -->
+  <div class="mb-6 flex items-center gap-4">
+    <label for="peer-db-select" class="font-medium">View TODOs from:</label>
+    <select
+      id="peer-db-select"
+      bind:value={selectedPeerId}
+      on:change={handlePeerDbSwitch}
+      class="px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+    >
+      <option value="">My DB (default)</option>
+      {#each peers as { peerId }}
+        {#if peerOrbitDbAddresses.get(peerId)}
+          <option value={peerId}>
+            {formatPeerId(peerId)}... (…{peerOrbitDbAddresses.get(peerId).slice(-5)})
+          </option>
+        {/if}
+      {/each}
+    </select>
+    {#if selectedPeerId && peerOrbitDbAddresses.get(selectedPeerId)}
+      <span class="text-xs text-gray-500">OrbitDB: <code class="bg-gray-100 px-1 rounded">…{peerOrbitDbAddresses.get(selectedPeerId).slice(-5)}</code></span>
+    {/if}
+  </div>
 
   {#if loading}
     <div class="text-center py-8">

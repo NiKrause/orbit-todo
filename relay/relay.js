@@ -4,7 +4,6 @@ import { circuitRelayServer, circuitRelayTransport } from '@libp2p/circuit-relay
 import { identify } from '@libp2p/identify'
 import { webRTC, webRTCDirect } from '@libp2p/webrtc'
 import { webSockets } from '@libp2p/websockets'
-import { webTransport } from '@libp2p/webtransport'
 import { createLibp2p } from 'libp2p'
 import * as filters from '@libp2p/websockets/filters'
 import { fromString as uint8ArrayFromString } from 'uint8arrays/from-string'
@@ -17,6 +16,7 @@ import { dcutr } from '@libp2p/dcutr'
 import { autoNAT } from '@libp2p/autonat'
 import { config } from 'dotenv'
 import express from 'express'
+import util from 'util'
 
 // Load environment variables
 config()
@@ -101,8 +101,17 @@ const server = await createLibp2p({
     dcutr: dcutr(),
     identify: identify(),
     pubsub: gossipsub({
+      emitSelf: true,
+      listenOnly: false,
       allowPublishToZeroTopicPeers: true,
-      canRelayMessage: true
+      canRelayMessage: true,
+      scoreParams: {
+        gossipThreshold: -Infinity,
+        publishThreshold: -Infinity,
+        graylistThreshold: -Infinity,
+        acceptPXThreshold: 0,
+        opportunisticGraftThreshold: 0
+      },
     }),
     relay: circuitRelayServer({
       reservations: {
@@ -114,17 +123,28 @@ const server = await createLibp2p({
   }
 })
 
+// Start the server
+await server.start()
+
 // Enhanced peer connection logging
 let connectedPeers = new Map() // Track connection details
 server.addEventListener('peer:discovery', async (event) => {
     const { id: peerId, multiaddrs } = event.detail
     console.log('🔍 Peer discovered:', peerId.toString(), 'Addresses:', multiaddrs.map(ma => ma.toString()))
+    console.log("server.services.pubsub.peers", server.services.pubsub.peers)
+    server.services.pubsub.publish('orbitdb-address', Buffer.from(JSON.stringify({
+      peerId: peerId.toString(),
+      dbAddress: 'test-address',
+      timestamp: new Date().toISOString()
+    })))
 })
+
+
 
 server.addEventListener('peer:connect', async event => {
   const { remotePeer, remoteAddr } = event.detail
-  console.log("remotePeer",remotePeer)
-  console.log("remoteAddr",remoteAddr)
+  // console.log("remotePeer",remotePeer)
+  // console.log("remoteAddr",remoteAddr)
   if(!remotePeer) return;
 
   const peerId = remotePeer.toString()
@@ -250,6 +270,26 @@ app.get('/peers', (req, res) => {
     timestamp: new Date().toISOString()
   })
 })
+
+// Test pubsub endpoint
+app.post('/test-pubsub', express.json(), async (req, res) => {
+  const testMsg = req.body?.msg || JSON.stringify({
+    peerId: 'test-peer',
+    dbAddress: 'test-address',
+    timestamp: new Date().toISOString()
+  });
+  try {
+    await server.services.pubsub.publish(
+      'orbitdb-address',
+      Buffer.from(typeof testMsg === 'string' ? testMsg : JSON.stringify(testMsg))
+    );
+    res.json({ success: true, sent: testMsg });
+    console.log('[relay] Sent test pubsub message:', testMsg);
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+    console.error('[relay] Failed to send test pubsub message:', e);
+  }
+});
 
 app.listen(httpPort, () => {
   console.log(`\nHTTP discovery server running on port ${httpPort}`)
