@@ -10,7 +10,9 @@
     getMyPeerId, 
     onDatabaseUpdate,
     getRelayDiscoveryStatus,
-    formatPeerId
+    formatPeerId,
+    getTodoDbAddress,
+    getTodoDbName
   } from './lib/p2p.js'
 
   let todos = []
@@ -24,6 +26,8 @@
   let showRelayDetails = false
   let toastMessage = '';
   let toastTimeout;
+  let dbAddress = null
+  let dbName = null
 
   function showToast(message) {
     toastMessage = message;
@@ -39,13 +43,28 @@
       todos = await getAllTodos()
       peers = await getConnectedPeers()
       myPeerId = getMyPeerId()
+      dbAddress = getTodoDbAddress()
+      dbName = getTodoDbName()
       
       // Subscribe to database updates
       onDatabaseUpdate(async (eventType, eventData) => {
+        console.log("eventType",eventType)
+        console.log("eventData",eventData)
         // Only refresh for certain event types (optional, but matches +page.svelte)
-        if (eventType === 'update' || eventType === 'replicated' || !eventType) {
+        if (eventType === 'update'  || !eventType) {
           todos = await getAllTodos()
           peers = await getConnectedPeers()
+          dbAddress = getTodoDbAddress()
+          dbName = getTodoDbName()
+          if (eventType === 'update') {
+            if (eventData?.type === 'PUT') {
+              showToast('Todo added or updated!');
+            } else if (eventData?.type === 'DEL') {
+              showToast('Todo deleted!');
+            } else {
+              showToast('Todo updated!');
+            }
+          }
         }
       })
 
@@ -343,5 +362,20 @@
         <p class="text-sm text-gray-500">Relay discovery provides WebRTC addresses with smart caching to avoid unnecessary requests on page reload.</p>
       {/if}
     </div>
+    {/if}
+  </main>
+
+<footer class="mt-10 text-center text-xs text-gray-500">
+  {#if dbAddress}
+    <div>
+      <strong>OrbitDB Address:</strong>
+      <code class="bg-gray-100 px-1 rounded">{dbAddress}</code>
+    </div>
   {/if}
-</main>
+  {#if dbName}
+    <div>
+      <strong>DB Name:</strong>
+      <code class="bg-gray-100 px-1 rounded">{dbName}</code>
+    </div>
+  {/if}
+</footer>

@@ -344,7 +344,7 @@ export async function getTodoDatabase() {
   if (!todoDB) {
     console.log("opening db")
     // Use a fixed database address for all peers to connect to the same DB
-    todoDB = await orbitdb.open('todos', {
+    todoDB = await orbitdb.open('/orbitdb/zdpuAyi5F5hrKKbqbHQ6wwFcs4eoEfbCNaSUuibKoFDosbbQJ' , {
       type: 'keyvalue',
       accessController: {
         type: 'orbitdb',
@@ -406,20 +406,6 @@ function setupDatabaseEventListeners() {
         }
       })
     }
-  })
-  
-  // Listen for replicated data from other peers
-  todoDB.events.on('replicated', (address, count) => {
-    console.log('🔄 OrbitDB replicated event:', { address, count })
-    
-    // Notify all registered callbacks when we receive data from peers
-    databaseUpdateCallbacks.forEach(callback => {
-      try {
-        callback('replicated', { address, count })
-      } catch (error) {
-        console.error('Error in database replicated callback:', error)
-      }
-    })
   })
   
   console.log('✅ OrbitDB event listeners configured')
@@ -1024,6 +1010,20 @@ export async function debugTodos() {
   }
   
   console.log('🐛 === DEBUG TODOS END ===')
+}
+
+/**
+ * Get the current OrbitDB address (or null if not open)
+ */
+export function getTodoDbAddress() {
+  return todoDB?.address?.toString?.() || null
+}
+
+/**
+ * Get the current OrbitDB name (or null if not open)
+ */
+export function getTodoDbName() {
+  return todoDB?.dbName || null
 }
 
 // Expose API for Playwright tests
