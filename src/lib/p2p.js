@@ -21,7 +21,7 @@ import { LevelBlockstore } from 'blockstore-level';
 import { RelayDiscovery } from '../utils/relay-discovery.js'
 import { runHealthCheck, runHealthCheckAndRecover } from '../utils/db-health-check.js'
 import { writable } from 'svelte/store'
-import { OrbitDBTopicDiscovery } from '../../orbitdb-discovery.js'
+import { OrbitDBTopicDiscovery } from './orbit-discovery.js'
 import { Multiaddr } from 'multiaddr';
 
 export const discoveredPeersStore = writable([]) // or Set, but array is easier for Svelte
