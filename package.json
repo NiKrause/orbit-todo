@@ -1,5 +1,5 @@
 {
-	"name": "todo-p2p",
+	"name": "orbit-todo",
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
@@ -14,6 +14,10 @@
 		"test:e2e": "npm run build && playwright test",
 		"test:node": "mocha tests/node/**/*.test.js",
 		"test:manual": "mocha tests/node/manual.test.js",
+		"test:standalone:emitself": "node tests/standalone/test-emitself-simple.js",
+		"test:standalone:pubsub": "node tests/standalone/test-pubsub-visibility.js",
+		"diagnostics:inspect": "node tests/diagnostics/inspect-storage.js",
+		"diagnostics:todos": "node tests/diagnostics/debug-todos.js",
 		"test": "npm run test:e2e && npm run test:node"
 	},
 	"dependencies": {

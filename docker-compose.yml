@@ -6,7 +6,7 @@ services:
       context: ./relay
       dockerfile: Dockerfile
     environment:
-      - RELAY_PEER_ID=${RELAY_PEER_ID}
+      - RELAY_PRIV_KEY=${RELAY_PRIV_KEY}
       - RELAY_WS_PORT=${RELAY_WS_PORT:-4001}
       - RELAY_TCP_PORT=${RELAY_TCP_PORT:-4002}
     ports:
@@ -15,6 +15,8 @@ services:
     restart: unless-stopped
     networks:
       - p2p-network
+    volumes:
+      - ./relay-datastore:/app/datastore
 
 networks:
   p2p-network:

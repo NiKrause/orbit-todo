@@ -26,7 +26,11 @@ config()
 const defaultRelayPrivKey = '08011240821cb6bc3d4547fcccb513e82e4d718089f8a166b23ffcd4a436754b6b0774cf07447d1693cd10ce11ef950d7517bad6e9472b41a927cd17fc3fb23f8c70cd99'
 
 // Use env variable or default key
-const relayPrivKey = process.env.RELAY_PEER_ID || defaultRelayPrivKey
+const relayPrivKey = process.env.RELAY_PRIV_KEY || defaultRelayPrivKey
+if (!relayPrivKey) {
+  console.error('RELAY_PRIV_KEY must be set!');
+  process.exit(1);
+}
 const privateKey = privateKeyFromProtobuf(uint8ArrayFromString(relayPrivKey, 'hex'))
 
 // Port configuration
@@ -40,7 +44,7 @@ const server = await createLibp2p({
     listen: [
       `/ip4/0.0.0.0/tcp/${wsPort}/ws`,
       `/ip4/0.0.0.0/tcp/${tcpPort}`,
-      `/ip4/0.0.0.0/tcp/4006/webrtc`,    // Direct WebRTC for private-to-public
+      `/ip4/0.0.0.0/tcp/${webrtcPort}/webrtc`,    // Direct WebRTC for private-to-public
       '/p2p-circuit'
     ],
     announce: [

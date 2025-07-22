@@ -1,6 +1,56 @@
-# Todo P2P
+# Orbit-Todo
 
-A peer-to-peer Todo application built with Svelte, Helia (IPFS), and OrbitDB for distributed data storage.
+A local-first, peer-to-peer Todo application built with Svelte, Helia (IPFS), and OrbitDB for distributed data storage.
+
+## 📁 Directory Structure
+
+```
+todo-p2p/
+├── 📱 src/                     # Main application source
+│   ├── lib/                    # Core P2P and OrbitDB logic
+│   │   ├── orbitdb.js         # OrbitDB database management
+│   │   ├── p2p.js             # Main P2P networking
+│   │   ├── p2p-core.js        # Core P2P utilities
+│   │   └── orbit-discovery.js  # Peer discovery logic
+│   ├── routes/                # SvelteKit routes
+│   ├── utils/                 # Utility functions
+│   ├── App.svelte            # Main Svelte component
+│   └── main.js               # Application entry point
+├── 🚀 relay/                   # Relay server for P2P networking
+│   └── relay.js              # libp2p relay server
+├── 🧪 tests/                   # Testing infrastructure
+│   ├── diagnostics/          # Diagnostic tools
+│   │   ├── db-diagnostics.html    # Interactive diagnostics UI
+│   │   ├── debug-todos.js         # Todo database diagnostic script
+│   │   └── inspect-storage.js     # Command-line storage inspector
+│   ├── e2e/                  # End-to-end tests (Playwright)
+│   │   └── todo.spec.js
+│   ├── node/                 # Node.js integration tests
+│   │   ├── bob.test.js       # Multi-peer test scenarios
+│   │   └── manual.test.js    # Manual testing utilities
+│   └── standalone/           # Standalone network tests
+│       ├── test-discovery.html        # WebRTC discovery testing
+│       ├── test-emitself-simple.js    # emitSelf functionality test
+│       └── test-pubsub-visibility.js  # Pubsub self-message test
+├── ⚙️  Configuration Files
+│   ├── package.json          # Dependencies and scripts
+│   ├── vite.config.js        # Vite bundler configuration
+│   ├── svelte.config.js      # Svelte configuration
+│   ├── tailwind.config.js    # TailwindCSS styling
+│   ├── playwright.config.js  # E2E test configuration
+│   └── eslint.config.js      # Code linting rules
+└── 📖 Documentation
+    └── README.md             # This file
+```
+
+### Key Components:
+
+- **🖥️ Frontend**: Svelte-based reactive UI with TailwindCSS
+- **🌐 P2P Networking**: libp2p with WebRTC, WebSockets, and Circuit Relay
+- **💾 Database**: OrbitDB for distributed, local-first data storage
+- **🔍 Discovery**: Peer discovery via libp2p bootstrap and pubsub
+- **🧪 Testing**: Comprehensive test suite for P2P functionality
+- **🚀 Relay Server**: Optional relay server for peer connectivity
 
 ## Developing
 
@@ -12,6 +62,33 @@ npm run dev
 # or start the server and open the app in a new browser tab
 npm run dev -- --open
 ```
+
+### 🧪 Testing & Diagnostics Scripts
+
+The project includes several npm scripts for testing and diagnostics:
+
+```bash
+# Main test suites
+npm test                    # Run all tests (e2e + node)
+npm run test:e2e           # Run Playwright end-to-end tests
+npm run test:node          # Run Node.js P2P integration tests
+npm run test:manual        # Run manual testing utilities
+
+# Standalone network tests
+npm run test:standalone:emitself  # Test emitSelf functionality
+npm run test:standalone:pubsub    # Test pubsub self-message visibility
+
+# Diagnostic tools
+npm run diagnostics:inspect       # Run command-line storage inspector
+npm run diagnostics:todos         # Todo database diagnostic script
+
+# P2P infrastructure
+npm run relay              # Start the libp2p relay server
+```
+
+**Interactive tools** (open in browser):
+- `tests/diagnostics/db-diagnostics.html` - Full diagnostic interface
+- `tests/standalone/test-discovery.html` - WebRTC discovery testing
 
 ## Building
 
@@ -325,12 +402,13 @@ telnet your-server-ip 4001
 
 ### Available Diagnostic Tools
 
-1. **Interactive Diagnostics Interface**: Open `db-diagnostics.html` in your browser
+1. **Interactive Diagnostics Interface**: Open `tests/diagnostics/db-diagnostics.html` in your browser
 2. **Built-in Debug Commands**: Available in browser console when app is running
 3. **Health Check System**: Comprehensive database and network diagnostics
 4. **Comprehensive Test Suite**: Full OrbitDB operation testing
 5. **P2P Network Diagnostics**: Pubsub and peer connection testing
-6. **Complete Data Cleanup**: Nuclear option for clearing all data
+6. **Standalone Network Tests**: Individual P2P component testing
+7. **Complete Data Cleanup**: Nuclear option for clearing all data
 
 ### 🛠️ Console Debug Functions
 
@@ -463,7 +541,7 @@ await window.app.forceResetDatabase()
 ### Advanced Diagnostics
 
 #### Interactive Diagnostic Interface
-Open `db-diagnostics.html` in your browser for a full GUI diagnostic tool with:
+Open `tests/diagnostics/db-diagnostics.html` in your browser for a full GUI diagnostic tool with:
 - Real-time health monitoring
 - Automatic recovery attempts
 - Detailed error reporting
@@ -471,8 +549,21 @@ Open `db-diagnostics.html` in your browser for a full GUI diagnostic tool with:
 
 #### Command Line Storage Inspector
 ```bash
-node inspect-storage.js
-node inspect-storage.js help  # For detailed help
+node tests/diagnostics/inspect-storage.js
+node tests/diagnostics/inspect-storage.js help  # For detailed help
+```
+
+#### Standalone Network Tests
+Run individual P2P component tests for debugging:
+```bash
+# Test emitSelf functionality
+node tests/standalone/test-emitself-simple.js
+
+# Test pubsub self-message visibility
+node tests/standalone/test-pubsub-visibility.js
+
+# Open WebRTC discovery test interface
+open tests/standalone/test-discovery.html
 ```
 
 #### Manual Storage Cleanup
