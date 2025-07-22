@@ -17,7 +17,8 @@ todo-p2p/
 │   ├── App.svelte            # Main Svelte component
 │   └── main.js               # Application entry point
 ├── 🚀 relay/                   # Relay server for P2P networking
-│   └── relay.js              # libp2p relay server
+│   ├── relay.js              # Basic libp2p relay server
+│   └── relay-enhanced.js     # Enhanced relay with advanced features
 ├── 🧪 tests/                   # Testing infrastructure
 │   ├── diagnostics/          # Diagnostic tools
 │   │   ├── db-diagnostics.html    # Interactive diagnostics UI
@@ -83,7 +84,9 @@ npm run diagnostics:inspect       # Run command-line storage inspector
 npm run diagnostics:todos         # Todo database diagnostic script
 
 # P2P infrastructure
-npm run relay              # Start the libp2p relay server
+npm run relay                     # Start basic libp2p relay server
+npm run relay:enhanced            # Start enhanced relay with advanced features
+npm run relay:enhanced:verbose    # Enhanced relay with detailed logging
 ```
 
 **Interactive tools** (open in browser):

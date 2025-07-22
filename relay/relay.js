@@ -18,6 +18,8 @@ import { config } from 'dotenv'
 import express from 'express'
 import { tls } from '@libp2p/tls'
 import { uPnPNAT } from '@libp2p/upnp-nat'
+import { LevelDatastore } from 'datastore-level'
+import { prometheusMetrics } from '@libp2p/prometheus-metrics'
 
 // Load environment variables
 config()

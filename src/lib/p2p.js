@@ -22,7 +22,6 @@ import { RelayDiscovery } from '../utils/relay-discovery.js'
 import { runHealthCheck, runHealthCheckAndRecover } from '../utils/db-health-check.js'
 import { writable } from 'svelte/store'
 import { OrbitDBTopicDiscovery } from './orbit-discovery.js'
-import { Multiaddr } from 'multiaddr';
 
 export const discoveredPeersStore = writable([]) // or Set, but array is easier for Svelte
 
@@ -37,18 +36,7 @@ let relayDiscovery = null
 // Bootstrap relay address
 const RELAY_BOOTSTRAP_ADDR = '/ip4/127.0.0.1/tcp/4001/ws/p2p/12D3KooWAJjbRkp8FPF5MKgMU53aUTxWkqvDrs4zc1VMbwRwfsbE'
 
-// If you have multiple bootstrap addresses, use an array
-const BOOTSTRAP_ADDRS = [RELAY_BOOTSTRAP_ADDR];
-// Extract peer IDs from bootstrap addresses
-const BOOTSTRAP_PEER_IDS = BOOTSTRAP_ADDRS.map(addr => {
-  try {
-    const ma = new Multiaddr(addr);
-    const peerIdStr = ma.getPeerId();
-    return peerIdStr;
-  } catch (e) {
-    return null;
-  }
-}).filter(Boolean);
+
 
 
 /**
