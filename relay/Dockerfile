@@ -1,16 +1,16 @@
-FROM node:20-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 
-# Copy package.json from parent directory (contains all dependencies)
-COPY ../package.json ./
-COPY relay.js ./
+# Copy package.json from context root (now project root)
+COPY package.json ./
+COPY relay/relay-enhanced.js ./relay.js
 
 # Install dependencies
-RUN npm install --production
+RUN npm install --omit=dev
 
 # Expose ports
-EXPOSE 4001 4002
+EXPOSE 4001 4002 4006 3000
 
 # Run the relay server
 CMD ["node", "relay.js"]

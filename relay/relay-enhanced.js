@@ -23,6 +23,7 @@ import { tls } from '@libp2p/tls'
 import { uPnPNAT } from '@libp2p/upnp-nat'
 import { LevelDatastore } from 'datastore-level'
 import { prometheusMetrics } from '@libp2p/prometheus-metrics'
+import { LevelKeystore } from 'libp2p-crypto/src/keystore/level'
 
 // Load environment variables
 config()
@@ -31,17 +32,17 @@ console.log('🚀 Starting enhanced relay server...')
 
 // Persistent datastore for peer keys and identity
 const datastore = new LevelDatastore(process.env.DATASTORE_PATH || './relay-datastore')
+const keystore = new LevelKeystore(process.env.KEYSTORE_PATH || './relay-keystore')
 
 // Default relay private key (production should use env variable)
-const defaultRelayPrivKey = '08011240821cb6bc3d4547fcccb513e82e4d718089f8a166b23ffcd4a436754b6b0774cf07447d1693cd10ce11ef950d7517bad6e9472b41a927cd17fc3fb23f8c70cd99'
+// const defaultRelayPrivKey = '08011240821cb6bc3d4547fcccb513e82e4d718089f8a166b23ffcd4a436754b6b0774cf07447d1693cd10ce11ef950d7517bad6e9472b41a927cd17fc3fb23f8c70cd99'
 
 // Use env variable or default key
-const relayPrivKey = process.env.RELAY_PRIV_KEY || defaultRelayPrivKey
-if (!relayPrivKey) {
-  console.error('RELAY_PRIV_KEY must be set!')
-  process.exit(1)
+const relayPrivKey = process.env.RELAY_PRIV_KEY
+let privateKey
+if (relayPrivKey) {
+  privateKey = privateKeyFromProtobuf(uint8ArrayFromString(relayPrivKey, 'hex'))
 }
-const privateKey = privateKeyFromProtobuf(uint8ArrayFromString(relayPrivKey, 'hex'))
 
 // Enhanced port configuration
 const wsPort = process.env.RELAY_WS_PORT || 4001
@@ -79,19 +80,22 @@ if (appendAnnounceArray.length > 0) {
 }
 console.log(`  - AutoTLS: ${autoTLSEnabled ? (stagingMode ? 'enabled (staging)' : 'enabled (production)') : 'disabled'}`)
 
-const server = await createLibp2p({
-  privateKey,
+const libp2pOptions = {
+  // Only include privateKey if defined
+  ...(privateKey && { privateKey }),
   datastore,
+  keystore,
   metrics: prometheusMetrics(),
   addresses: {
     listen: [
       `/ip4/0.0.0.0/tcp/${tcpPort}`,              // Direct TCP
       `/ip4/0.0.0.0/tcp/${wsPort}/ws`,            // WebSocket for browsers
-      `/ip4/0.0.0.0/udp/${webrtcPort}/webrtc`,    // WebRTC for NAT traversal
+      `/ip4/0.0.0.0/udp/${webrtcPort}/webrtc`,              // WebRTC for NAT traversal
       `/ip4/0.0.0.0/udp/${webrtcDirectPort}/webrtc-direct`, // WebRTC Direct
-      '/ip6/::/tcp/9091',                         // IPv6 TCP
-      '/ip6/::/tcp/9092/ws',                      // IPv6 WebSocket
-      '/ip6/::/udp/9093/webrtc-direct',          // IPv6 WebRTC Direct
+      `/ip6/::/tcp/${tcpPort}`,                                 // IPv6 TCP
+      `/ip6/::/tcp/${wsPort}/ws`,                               // IPv6 WebSocket
+      `/ip6/::/udp/${webrtcPort}/webrtc`,                       // IPv6 WebRTC Direct
+      `/ip6/::/udp/${webrtcDirectPort}/webrtc-direct`,          // IPv6 WebRTC Direct
       '/p2p-circuit'                             // Circuit relay
     ],
     // Enhanced announce addresses with environment-aware configuration
@@ -217,7 +221,10 @@ const server = await createLibp2p({
       })
     })
   }
-})
+}
+
+// Use the options object
+const server = await createLibp2p(libp2pOptions)
 
 // Datastore diagnostic function (from reference)
 async function listDatastoreKeys() {
