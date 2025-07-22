@@ -6,8 +6,6 @@ import { webRTC, webRTCDirect } from '@libp2p/webrtc'
 import { webSockets } from '@libp2p/websockets'
 import { createLibp2p } from 'libp2p'
 import * as filters from '@libp2p/websockets/filters'
-import { fromString as uint8ArrayFromString } from 'uint8arrays/from-string'
-import { privateKeyFromProtobuf } from '@libp2p/crypto/keys'
 import { gossipsub } from '@chainsafe/libp2p-gossipsub'
 import { pubsubPeerDiscovery } from '@libp2p/pubsub-peer-discovery'
 import { kadDHT, removePrivateAddressesMapper } from '@libp2p/kad-dht'
@@ -21,28 +19,25 @@ import { config } from 'dotenv'
 import express from 'express'
 import { tls } from '@libp2p/tls'
 import { uPnPNAT } from '@libp2p/upnp-nat'
-import { LevelDatastore } from 'datastore-level'
 import { prometheusMetrics } from '@libp2p/prometheus-metrics'
-import { LevelKeystore } from 'libp2p-crypto/src/keystore/level'
+import { initializeStorage, closeStorage } from './services/storage.js'
 
 // Load environment variables
 config()
 
 console.log('🚀 Starting enhanced relay server...')
 
-// Persistent datastore for peer keys and identity
-const datastore = new LevelDatastore(process.env.DATASTORE_PATH || './relay-datastore')
-const keystore = new LevelKeystore(process.env.KEYSTORE_PATH || './relay-keystore')
+// Determine if we're in development mode
+const isDevelopment = process.env.NODE_ENV === 'development' || process.argv.includes('--dev')
+const fixedPrivateKey = process.env.RELAY_PRIV_KEY
 
-// Default relay private key (production should use env variable)
-// const defaultRelayPrivKey = '08011240821cb6bc3d4547fcccb513e82e4d718089f8a166b23ffcd4a436754b6b0774cf07447d1693cd10ce11ef950d7517bad6e9472b41a927cd17fc3fb23f8c70cd99'
-
-// Use env variable or default key
-const relayPrivKey = process.env.RELAY_PRIV_KEY
-let privateKey
-if (relayPrivKey) {
-  privateKey = privateKeyFromProtobuf(uint8ArrayFromString(relayPrivKey, 'hex'))
-}
+// Initialize storage with persistent datastore, blockstore, and private key management
+const storage = await initializeStorage(
+  process.env.DATASTORE_PATH || './relay-datastore',
+  isDevelopment,
+  fixedPrivateKey
+)
+const { datastore, blockstore, privateKey } = storage
 
 // Enhanced port configuration
 const wsPort = process.env.RELAY_WS_PORT || 4001
@@ -81,10 +76,9 @@ if (appendAnnounceArray.length > 0) {
 console.log(`  - AutoTLS: ${autoTLSEnabled ? (stagingMode ? 'enabled (staging)' : 'enabled (production)') : 'disabled'}`)
 
 const libp2pOptions = {
-  // Only include privateKey if defined
+  // Include private key and datastore
   ...(privateKey && { privateKey }),
   datastore,
-  keystore,
   metrics: prometheusMetrics(),
   addresses: {
     listen: [
@@ -225,6 +219,25 @@ const libp2pOptions = {
 
 // Use the options object
 const server = await createLibp2p(libp2pOptions)
+
+// Add the certificate:provision event listener here
+const certificateHandler = () => {
+  console.log('A TLS certificate was provisioned')
+
+  const interval = setInterval(() => {
+    const mas = server
+      .getMultiaddrs()
+      .filter(ma => ma.toString().includes('/wss/') && ma.toString().includes('/sni/'))
+      .map(ma => ma.toString())
+
+    if (mas.length > 0) {
+      console.log('addresses:')
+      console.log(mas.join('\n'))
+      clearInterval(interval)
+    }
+  }, 1_000)
+}
+server.addEventListener('certificate:provision', certificateHandler)
 
 // Datastore diagnostic function (from reference)
 async function listDatastoreKeys() {
@@ -506,8 +519,8 @@ const gracefulShutdown = async (signal) => {
     console.log('⏳ Stopping libp2p node...')
     await server.stop()
     
-    console.log('⏳ Closing datastore...')
-    await datastore.close()
+    console.log('⏳ Closing storage...')
+    await closeStorage(storage)
     
     console.log('✅ Graceful shutdown completed')
   } catch (error) {

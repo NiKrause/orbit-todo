@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Copy package.json from context root (now project root)
 COPY package.json ./
-COPY relay/relay-enhanced.js ./relay.js
+COPY relay/ ./
 
 # Install dependencies
 RUN npm install --omit=dev
@@ -13,4 +13,4 @@ RUN npm install --omit=dev
 EXPOSE 4001 4002 4006 3000
 
 # Run the relay server
-CMD ["node", "relay.js"]
+CMD ["node", "relay-enhanced.js"]
