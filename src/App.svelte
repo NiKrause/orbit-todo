@@ -63,7 +63,7 @@ getPeerOrbitDbAddresses,
     let peerUpdateInterval;
     function startPeerTransportMonitoring() {
       peerUpdateInterval = setInterval(async () => {
-        const updatedPeers = await getConnectedPeers();
+        const updatedPeers = getConnectedPeers();
         let hasChanges = false;
         
         // Check if any peer's transports have changed
@@ -93,7 +93,7 @@ getPeerOrbitDbAddresses,
     try {
       await initializeP2P()
       todos = await getAllTodos()
-      peers = await getConnectedPeers()
+      peers = getConnectedPeers()
       myPeerId = getMyPeerId()
       dbAddress = getTodoDbAddress()
       dbName = getTodoDbName()
@@ -105,7 +105,7 @@ getPeerOrbitDbAddresses,
         // Only refresh for certain event types (optional, but matches +page.svelte)
         if (eventType === 'update'  || !eventType) {
           todos = await getAllTodos()
-          peers = await getConnectedPeers()
+          peers = getConnectedPeers()
           dbAddress = getTodoDbAddress()
           dbName = getTodoDbName()
           if (eventType === 'update') {
@@ -122,7 +122,7 @@ getPeerOrbitDbAddresses,
 
       // Listen for peer connect/disconnect events
       function updatePeers() {
-        getConnectedPeers().then(p => peers = p)
+        peers = getConnectedPeers()
       }
 
 function handlePeerConnected(e) {
