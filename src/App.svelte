@@ -296,6 +296,12 @@ function handlePeerConnected(e) {
   </div>
 {/if}
 
+<svelte:head>
+  <title>P2P TODO List {__APP_VERSION__}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="A peer-to-peer TODO list application using OrbitDB and IPFS">
+</svelte:head>
+
 <main class="container mx-auto p-6 max-w-4xl">
   <h1 class="text-3xl font-bold mb-6 text-center">P2P TODO List</h1>
 
@@ -331,6 +337,7 @@ function handlePeerConnected(e) {
     <div class="text-center py-8">
       <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
       <p class="mt-4 text-gray-600">Initializing P2P connection...</p>
+      <p class="mt-2 text-xs text-gray-400">v{__APP_VERSION__}</p>
     </div>
   {:else if error}
     <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
@@ -541,7 +548,10 @@ function handlePeerConnected(e) {
     {/if}
   </main>
 
-<footer class="mt-10 text-center text-xs text-gray-500">
+<footer class="mt-10 text-center text-xs text-gray-500 space-y-1">
+  <div class="font-medium text-gray-600">
+    P2P TODO List v{__APP_VERSION__}
+  </div>
   {#if dbAddress}
     <div>
       <strong>OrbitDB Address:</strong>
