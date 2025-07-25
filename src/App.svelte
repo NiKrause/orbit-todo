@@ -1230,6 +1230,8 @@ function handlePeerConnected(e) {
           orbitDatabases: 0,
           ownDatabases: 0,
           peerDatabases: 0,
+          todoDbCount: 0,
+          writePermissionDbCount: 0,
           orbitDbSize: 0
         },
         pins: [],
@@ -1421,6 +1423,7 @@ function handlePeerConnected(e) {
           });
           
           analysis.summary.ownDatabases++;
+          analysis.summary.todoDbCount++;
           processedDatabases.add(currentDbAddress);
         }
         
@@ -1455,6 +1458,7 @@ function handlePeerConnected(e) {
           });
           
           analysis.summary.ownDatabases++;
+          analysis.summary.writePermissionDbCount++;
           processedDatabases.add(myWritePermissionDbAddress);
         }
         
@@ -1481,6 +1485,7 @@ function handlePeerConnected(e) {
             });
             
             analysis.summary.peerDatabases++;
+            analysis.summary.todoDbCount++;
             processedDatabases.add(dbAddress);
           }
         }
@@ -1514,6 +1519,7 @@ function handlePeerConnected(e) {
             });
             
             analysis.summary.peerDatabases++;
+            analysis.summary.writePermissionDbCount++;
             processedDatabases.add(dbAddress);
           }
         }

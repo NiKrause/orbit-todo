@@ -3,7 +3,7 @@
   
   export let showRelayDetails;
   export let relayStatus;
-  export let onToggleDetails;
+  export let onToggleShow;
   export let onRefreshCache;
 </script>
 
@@ -12,7 +12,7 @@
     <h2 class="text-xl font-semibold">Relay Discovery Status</h2>
     <div class="flex space-x-2">
       <button 
-        on:click={onToggleDetails}
+        on:click={onToggleShow}
         class="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-md transition-colors"
       >
         {showRelayDetails ? 'Hide Details' : 'Show Details'}

@@ -333,8 +333,12 @@
           <h3 class="font-semibold text-green-900 mb-2">🌍 OrbitDB Info</h3>
           <div class="space-y-1 text-sm">
             <div class="flex justify-between">
-              <span>Active DBs:</span>
-              <span class="font-mono">{ipfsAnalysis.summary.orbitDatabases}</span>
+              <span>Todo DB's:</span>
+              <span class="font-mono text-blue-600">{ipfsAnalysis.summary.todoDbCount}</span>
+            </div>
+            <div class="flex justify-between">
+              <span>Write Permission DB's:</span>
+              <span class="font-mono text-purple-600">{ipfsAnalysis.summary.writePermissionDbCount}</span>
             </div>
             <div class="flex justify-between">
               <span>Own DBs:</span>
@@ -343,10 +347,6 @@
             <div class="flex justify-between">
               <span>Peer DBs:</span>
               <span class="font-mono text-orange-600">{ipfsAnalysis.summary.peerDatabases}</span>
-            </div>
-            <div class="flex justify-between">
-              <span>DB Size:</span>
-              <span class="font-mono font-semibold">{formatBytes ? formatBytes(ipfsAnalysis.summary.orbitDbSize) : '0 Bytes'}</span>
             </div>
           </div>
         </div>
@@ -358,11 +358,11 @@
             {#if ipfsAnalysis.identity}
               <div class="flex justify-between">
                 <span>Peer ID:</span>
-                <span class="font-mono text-blue-600">{formatPeerId ? formatPeerId(ipfsAnalysis.identity.peerId) : ipfsAnalysis.identity.peerId}</span>
+                <span class="font-mono text-blue-600">{formatPeerId ? formatPeerId(ipfsAnalysis.identity.peerId) : (ipfsAnalysis.identity.peerId.slice(0, 4) + '...' + ipfsAnalysis.identity.peerId.slice(-4))}</span>
               </div>
               <div class="flex justify-between">
                 <span>Public Key:</span>
-                <span class="font-mono text-xs">{ipfsAnalysis.identity.publicKey ? ipfsAnalysis.identity.publicKey.substring(0, 12) + '...' : 'N/A'}</span>
+                <span class="font-mono text-xs">{ipfsAnalysis.identity.publicKey ? (ipfsAnalysis.identity.publicKey.slice(0, 4) + '...' + ipfsAnalysis.identity.publicKey.slice(-4)) : 'N/A'}</span>
               </div>
               <div class="flex justify-between">
                 <span>Key Type:</span>
@@ -456,7 +456,7 @@
                     </div>
                     <div>
                       <div class="text-gray-600">Public Key:</div>
-                      <div class="font-mono text-xs">{db.identity.publicKey ? db.identity.publicKey.substring(0, 20) + '...' : 'N/A'}</div>
+                      <div class="font-mono text-xs">{db.identity.publicKey ? (db.identity.publicKey.slice(0, 4) + '...' + db.identity.publicKey.slice(-4)) : 'N/A'}</div>
                     </div>
                   {/if}
                   {#if db.records !== undefined}
