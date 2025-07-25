@@ -17,7 +17,7 @@ export async function getRelayDiscoveryStatus() {
     const isDevelopment = bootstrapConfig.isDevelopment
     const relayHttpUrl = isDevelopment 
       ? 'http://127.0.0.1:3000'  // Development relay HTTP server
-      : 'http://91-99-67-170.k51qzi5uqu5dl6dk0zoaocksijnghdrkxir5m4yfcodish4df6re6v3wbl6njf.libp2p.direct:4000'  // Production relay HTTP server
+      : 'https://91-99-67-170.k51qzi5uqu5dl6dk0zoaocksijnghdrkxir5m4yfcodish4df6re6v3wbl6njf.libp2p.direct:4000'  // Production relay HTTP server
     
     console.log('🔧 Creating RelayDiscovery with HTTP URL:', relayHttpUrl, '(based on bootstrap:', bootstrapConfig.currentBootstrapAddr, ')')
     relayDiscovery = new RelayDiscovery(relayHttpUrl)

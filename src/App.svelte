@@ -33,6 +33,11 @@ import {
   import { discoverRelay } from './utils/relay-discovery.js'
   import { getHelia } from './lib/p2p/network.js'
 
+  // Import services
+  import { ToastService } from './services/ToastService.js'
+  import { EventManager } from './services/EventManager.js'
+  import { DatabaseSwitcher } from './services/DatabaseSwitcher.js'
+
   // Import components
   import Toast from './components/Toast.svelte'
   import LoadingState from './components/LoadingState.svelte'
@@ -55,12 +60,10 @@ import {
   let relayStatus = null
   let showRelayDetails = false
   let toastMessage = '';
-  let toastTimeout;
   let dbAddress = null
   let dbName = null
   let selectedPeerId = '';
   let peerOrbitDbAddresses = new Map();
-  let cleanupDatabaseListener = null;
   let writePermissionRequests = [];
   let outgoingWritePermissionRequests = [];
   let showWritePermissions = false;
@@ -77,15 +80,17 @@ import {
   let showIPFSDetails = false;
   let ipfsAnalysis = null;
 
-  function showToast(message) {
-    toastMessage = message;
-    clearTimeout(toastTimeout);
-    toastTimeout = setTimeout(() => {
-      toastMessage = '';
-    }, 1500); // Toast visible for 1.5 seconds
-  }
+  // Services
+  let toastService;
+  let eventManager;
+  let databaseSwitcher;
 
   onMount(async () => {
+    // Initialize services
+    toastService = new ToastService((message) => {
+      toastMessage = message;
+    });
+    
     function updatePeerTransports(peerId, newTransport) {
       const peer = peers.find(p => p.peerId === peerId);
       if (peer) {
@@ -152,11 +157,11 @@ import {
           dbName = getTodoDbName()
           if (eventType === 'update') {
             if (eventData?.type === 'PUT') {
-              showToast('Todo added or updated!');
+              toastService.show('Todo added or updated!');
             } else if (eventData?.type === 'DEL') {
-              showToast('Todo deleted!');
+              toastService.show('Todo deleted!');
             } else {
-              showToast('Todo updated!');
+              toastService.show('Todo updated!');
             }
           }
         }
@@ -173,13 +178,13 @@ function handlePeerConnected(e) {
         updatePeerTransports(peerId, newTransport);
         updatePeers();
         console.log("handlePeerConnected",e.detail);
-        showToast(`Peer connected: ${formatPeerId(peerId)}`);
+        toastService.show(`Peer connected: ${formatPeerId(peerId)}`);
       }
 
       function handlePeerDisconnected(e) {
         updatePeers();
         const peerId = e.detail?.peerId || 'unknown';
-        showToast(`Peer disconnected: ${formatPeerId(peerId)}`);
+        toastService.show(`Peer disconnected: ${formatPeerId(peerId)}`);
       }
 
       window.addEventListener('p2p-peer-connected', handlePeerConnected);
@@ -198,7 +203,7 @@ function handlePeerConnected(e) {
         const { peerId, topic: dbAddress } = e.detail || {};
         // Only show toast if it's not our own peerId
         if (peerId && peerId !== myPeerId) {
-          showToast(`Received OrbitDB address from peer: ${formatPeerId(peerId)}`);
+          toastService.show(`Received OrbitDB address from peer: ${formatPeerId(peerId)}`);
         }
       }
       window.addEventListener('orbitdb-database-discovered', handleOrbitDbAddressUpdate);
@@ -206,17 +211,17 @@ function handlePeerConnected(e) {
       // Listen for write permission request events
       function handleWritePermissionRequestSent(e) {
         const { targetPeerId } = e.detail;
-        showToast(`📝 Write permission request sent to ${formatPeerId(targetPeerId)}`);
+        toastService.show(`📝 Write permission request sent to ${formatPeerId(targetPeerId)}`);
       }
       
       function handleWritePermissionGranted(e) {
         const { requesterPeerId } = e.detail;
-        showToast(`✅ Write permission granted to ${formatPeerId(requesterPeerId)}`);
+        toastService.show(`✅ Write permission granted to ${formatPeerId(requesterPeerId)}`);
       }
       
       function handleWritePermissionRequestReceived(e) {
         const { requesterPeerId } = e.detail;
-        showToast(`🔔 New write permission request from ${formatPeerId(requesterPeerId)}`);
+        toastService.show(`🔔 New write permission request from ${formatPeerId(requesterPeerId)}`);
       }
       
       window.addEventListener('write-permission-request-sent', handleWritePermissionRequestSent);
