@@ -64,6 +64,7 @@
   let browserDatabases = [];
   let viewingDatabase = null;
   let databaseContents = {};
+  let storageUsage = null;
 
   function showToast(message) {
     toastMessage = message;
@@ -484,6 +485,73 @@ function handlePeerConnected(e) {
         return;
       }
       
+      // Get storage information
+      let storageInfo = null;
+      try {
+        if ('storage' in navigator && 'estimate' in navigator.storage) {
+          storageInfo = await navigator.storage.estimate();
+          console.log('💾 Storage usage info:', storageInfo);
+        }
+      } catch (error) {
+        console.warn('⚠️ Could not get storage usage info:', error);
+      }
+
+      // Function to estimate database size
+      async function getDatabaseSize(dbName) {
+        try {
+          const request = indexedDB.open(dbName);
+          const dbInstance = await new Promise((resolve, reject) => {
+            request.onsuccess = (event) => resolve(event.target.result);
+            request.onerror = () => reject(request.error);
+          });
+
+          const storeNames = Array.from(dbInstance.objectStoreNames);
+          let totalSize = 0;
+
+          for (const storeName of storeNames) {
+            try {
+              const transaction = dbInstance.transaction(storeName, 'readonly');
+              const store = transaction.objectStore(storeName);
+              
+              // Get all records to estimate size
+              const getAllRequest = store.getAll();
+              const records = await new Promise((resolve) => {
+                getAllRequest.onsuccess = () => resolve(getAllRequest.result || []);
+                getAllRequest.onerror = () => resolve([]);
+              });
+              
+              // Estimate size by serializing a sample and extrapolating
+              if (records.length > 0) {
+                // Sample first few records to estimate average size
+                const sampleSize = Math.min(10, records.length);
+                let sampleTotalSize = 0;
+                
+                for (let i = 0; i < sampleSize; i++) {
+                  try {
+                    const serialized = JSON.stringify(records[i]);
+                    sampleTotalSize += serialized.length * 2; // UTF-16 encoding
+                  } catch (e) {
+                    // If JSON.stringify fails, estimate based on object structure
+                    sampleTotalSize += 1024; // Default 1KB estimate
+                  }
+                }
+                
+                const averageRecordSize = sampleTotalSize / sampleSize;
+                totalSize += averageRecordSize * records.length;
+              }
+            } catch (err) {
+              console.warn('Error estimating size for store:', storeName, err);
+            }
+          }
+
+          dbInstance.close();
+          return Math.round(totalSize);
+        } catch (err) {
+          console.warn('Error estimating database size:', dbName, err);
+          return 0;
+        }
+      }
+      
       const allDatabases = await indexedDB.databases();
       console.log('📊 All databases found:', allDatabases);
       
@@ -507,6 +575,16 @@ function handlePeerConnected(e) {
                name.includes('ipfs') ||
                name.includes('keystore') ||
                name.includes('peer') ||
+               name.includes('gossipsub') ||
+               name.includes('dht') ||
+               name.includes('kademlia') ||
+               name.includes('pubsub') ||
+               name.includes('bootstrap') ||
+               name.includes('identity') ||
+               name.includes('autonat') ||
+               name.includes('dcutr') ||
+               name.includes('circuit') ||
+               name.includes('relay') ||
                name.startsWith('/') // OrbitDB addresses start with /
       });
       
@@ -566,7 +644,12 @@ function handlePeerConnected(e) {
           }
           
           // Check if this looks like an active Libp2p datastore
-          if (!enhanced.isActive && db.name.toLowerCase().includes('libp2p')) {
+          if (!enhanced.isActive && (
+            db.name.toLowerCase().includes('libp2p') ||
+            db.name.toLowerCase().includes('keystore') ||
+            db.name.toLowerCase().endsWith('-keystore') ||
+            db.name.toLowerCase().includes('peer-')
+          )) {
             enhanced.isActive = true;
             enhanced.activeType = 'libp2p';
             console.log('🎯 Found active Libp2p database:', db.name);
@@ -748,7 +831,10 @@ function handlePeerConnected(e) {
             
             enhanced.storeNames = storeNames;
             enhanced.totalRecords = totalRecords;
-            enhanced.lastAccessed = new Date().toISOString(); // Current time as "last accessed"
+            enhanced.lastAccessed = new Date().toISOString();
+            
+            // Get estimated size
+            enhanced.estimatedSize = await getDatabaseSize(db.name);
             
             dbInstance.close();
           } catch (error) {
@@ -756,6 +842,7 @@ function handlePeerConnected(e) {
             enhanced.storeNames = [];
             enhanced.totalRecords = 0;
             enhanced.lastAccessed = null;
+            enhanced.estimatedSize = 0;
             console.warn(`Could not access metadata for database: ${db.name}`, error);
           }
           
@@ -773,13 +860,46 @@ function handlePeerConnected(e) {
       browserDatabases = enhancedDatabases;
       
       const activeCount = enhancedDatabases.filter(db => db.isActive).length;
-      console.log('🗄️ Enhanced P2P databases found:', {
+      
+      // Calculate storage usage summary
+      const totalEstimatedSize = enhancedDatabases.reduce((sum, db) => sum + (db.estimatedSize || 0), 0);
+      const activeDatabasesSize = enhancedDatabases.filter(db => db.isActive).reduce((sum, db) => sum + (db.estimatedSize || 0), 0);
+      const inactiveDatabasesSize = enhancedDatabases.filter(db => !db.isActive).reduce((sum, db) => sum + (db.estimatedSize || 0), 0);
+      
+      // Group by type
+      const orbitDbSize = enhancedDatabases.filter(db => db.activeType === 'orbitdb').reduce((sum, db) => sum + (db.estimatedSize || 0), 0);
+      const heliaSize = enhancedDatabases.filter(db => db.activeType === 'helia').reduce((sum, db) => sum + (db.estimatedSize || 0), 0);
+      const libp2pSize = enhancedDatabases.filter(db => db.activeType === 'libp2p').reduce((sum, db) => sum + (db.estimatedSize || 0), 0);
+      const otherSize = enhancedDatabases.filter(db => !db.activeType).reduce((sum, db) => sum + (db.estimatedSize || 0), 0);
+      
+      storageUsage = {
+        used: storageInfo?.usage || 0,
+        quota: storageInfo?.quota || 0,
+        p2pDatabases: {
+          total: enhancedDatabases.length,
+          active: activeCount,
+          inactive: enhancedDatabases.length - activeCount,
+          totalSize: totalEstimatedSize,
+          activeDatabasesSize,
+          inactiveDatabasesSize,
+          byType: {
+            orbitdb: { count: enhancedDatabases.filter(db => db.activeType === 'orbitdb').length, size: orbitDbSize },
+            helia: { count: enhancedDatabases.filter(db => db.activeType === 'helia').length, size: heliaSize },
+            libp2p: { count: enhancedDatabases.filter(db => db.activeType === 'libp2p').length, size: libp2pSize },
+            other: { count: enhancedDatabases.filter(db => !db.activeType).length, size: otherSize }
+          }
+        }
+      };
+      
+      console.log('🗄️ Enhanced P2P databases with size analysis:', {
         total: browserDatabases.length,
         active: activeCount,
-        inactive: browserDatabases.length - activeCount
+        inactive: browserDatabases.length - activeCount,
+        totalEstimatedSize: formatBytes(totalEstimatedSize),
+        storageUsage
       });
       
-      showToast(`Found ${browserDatabases.length} P2P database(s) (${activeCount} active)`);
+      showToast(`Found ${browserDatabases.length} P2P database(s) (${activeCount} active) - ${formatBytes(totalEstimatedSize)}`);
     } catch (error) {
       console.error('❌ Error refreshing databases:', error);
       showToast('Failed to refresh databases');
@@ -868,8 +988,45 @@ function handlePeerConnected(e) {
         console.log('✅ Database deleted:', dbName);
         showToast(`Database "${dbName}" deleted`);
         
+        // Find the deleted database to get its size
+        const deletedDb = browserDatabases.find(db => db.name === dbName);
+        const deletedSize = deletedDb?.estimatedSize || 0;
+        
         // Remove from our list
         browserDatabases = browserDatabases.filter(db => db.name !== dbName);
+        
+        // Update storage usage if it exists
+        if (storageUsage && deletedDb) {
+          // Update total size
+          storageUsage.p2pDatabases.totalSize -= deletedSize;
+          
+          // Update active/inactive sizes
+          if (deletedDb.isActive) {
+            storageUsage.p2pDatabases.activeDatabasesSize -= deletedSize;
+            storageUsage.p2pDatabases.active -= 1;
+          } else {
+            storageUsage.p2pDatabases.inactiveDatabasesSize -= deletedSize;
+            storageUsage.p2pDatabases.inactive -= 1;
+          }
+          
+          // Update by type
+          if (deletedDb.activeType) {
+            const typeKey = deletedDb.activeType;
+            if (storageUsage.p2pDatabases.byType[typeKey]) {
+              storageUsage.p2pDatabases.byType[typeKey].size -= deletedSize;
+              storageUsage.p2pDatabases.byType[typeKey].count -= 1;
+            }
+          } else {
+            storageUsage.p2pDatabases.byType.other.size -= deletedSize;
+            storageUsage.p2pDatabases.byType.other.count -= 1;
+          }
+          
+          // Update total count
+          storageUsage.p2pDatabases.total -= 1;
+          
+          // Trigger reactivity
+          storageUsage = { ...storageUsage };
+        }
         
         // Clear viewing state if we were viewing this database
         if (viewingDatabase === dbName) {
@@ -892,6 +1049,78 @@ function handlePeerConnected(e) {
     } catch (error) {
       console.error('❌ Error deleting database:', error);
       showToast('Failed to delete database');
+    }
+  }
+  
+  async function deleteAllInactiveDatabases() {
+    const inactiveDatabases = browserDatabases.filter(db => !db.isActive);
+    
+    if (inactiveDatabases.length === 0) {
+      showToast('No inactive databases to delete');
+      return;
+    }
+    
+    if (!confirm(`Are you sure you want to delete ${inactiveDatabases.length} inactive P2P databases? This action cannot be undone.`)) {
+      return;
+    }
+    
+    try {
+      console.log('🗑️ Deleting inactive databases:', inactiveDatabases.length);
+      showToast('Deleting inactive databases...');
+      
+      let deletedCount = 0;
+      let failedCount = 0;
+      
+      for (const db of inactiveDatabases) {
+        try {
+          await new Promise((resolve, reject) => {
+            const deleteRequest = indexedDB.deleteDatabase(db.name);
+            
+            deleteRequest.onsuccess = () => {
+              console.log('✅ Deleted inactive database:', db.name);
+              deletedCount++;
+              resolve();
+            };
+            
+            deleteRequest.onerror = () => {
+              console.error('❌ Failed to delete inactive database:', db.name, deleteRequest.error);
+              failedCount++;
+              reject(deleteRequest.error);
+            };
+            
+            deleteRequest.onblocked = () => {
+              console.warn('⚠️ Deletion blocked for inactive database:', db.name);
+              failedCount++;
+              reject(new Error('Deletion blocked'));
+            };
+          });
+        } catch (error) {
+          console.error('Error deleting inactive database:', db.name, error);
+          failedCount++;
+        }
+      }
+      
+      // Update our state - remove deleted databases
+      browserDatabases = browserDatabases.filter(db => db.isActive || !inactiveDatabases.some(deleted => deleted.name === db.name));
+      
+      // Clear viewing state if we were viewing a deleted database
+      if (viewingDatabase && inactiveDatabases.some(db => db.name === viewingDatabase)) {
+        viewingDatabase = null;
+        delete databaseContents[viewingDatabase];
+        databaseContents = { ...databaseContents };
+      }
+      
+      if (failedCount === 0) {
+        showToast(`✅ Successfully deleted ${deletedCount} inactive databases`);
+      } else {
+        showToast(`⚠️ Deleted ${deletedCount} inactive databases, failed to delete ${failedCount}`);
+      }
+      
+      console.log(`🧹 Inactive database cleanup complete: ${deletedCount} deleted, ${failedCount} failed`);
+      
+    } catch (error) {
+      console.error('❌ Error during inactive database deletion:', error);
+      showToast('Failed to delete inactive databases');
     }
   }
   
@@ -959,13 +1188,17 @@ function handlePeerConnected(e) {
       showToast('Failed to delete all databases');
     }
   }
+  
+  function formatBytes(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
 </script>
 
-{#if toastMessage}
-  <div class="fixed top-4 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-4 py-2 rounded shadow-lg z-50 transition-opacity duration-300">
-    {toastMessage}
-  </div>
-{/if}
+<Toast message={toastMessage} />
 
 <svelte:head>
   <title>P2P TODO List {__APP_VERSION__}</title>
@@ -976,659 +1209,108 @@ function handlePeerConnected(e) {
 <main class="container mx-auto p-6 max-w-4xl">
   <h1 class="text-3xl font-bold mb-6 text-center">P2P TODO List</h1>
 
-  <!-- Peer OrbitDB Selection Dropdown -->
-  <div class="mb-6 flex items-center gap-4">
-    <label for="peer-db-select" class="font-medium">View TODOs from:</label>
-    <select
-      id="peer-db-select"
-      bind:value={selectedPeerId}
-      on:change={handlePeerDbSwitch}
-      class="px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-    >
-      <option value="">My DB (default)</option>
-      {#each peers as { peerId }}
-        <!-- Debug logging in template -->
-        {console.log('📝 [DROPDOWN DEBUG] Checking peer:', peerId, 'Has OrbitDB address:', !!peerOrbitDbAddresses.get(peerId), 'Address:', peerOrbitDbAddresses.get(peerId))}
-        {#if peerOrbitDbAddresses.get(peerId)}
-          <option value={peerId}>
-            {formatPeerId(peerId)}... (…{peerOrbitDbAddresses.get(peerId).slice(-5)})
-          </option>
-        {:else}
-          <!-- Show debug option for peers without OrbitDB address -->
-          <!-- <option value={peerId} disabled>{formatPeerId(peerId)}... (no OrbitDB address)</option> -->
-        {/if}
-      {/each}
-    </select>
-    {#if selectedPeerId && peerOrbitDbAddresses.get(selectedPeerId)}
-      <span class="text-xs text-gray-500">OrbitDB: <code class="bg-gray-100 px-1 rounded">…{peerOrbitDbAddresses.get(selectedPeerId).slice(-5)}</code></span>
-    {/if}
-  </div>
+  <DatabaseSelector 
+    bind:selectedPeerId
+    {peers}
+    {peerOrbitDbAddresses}
+    onDatabaseSwitch={handlePeerDbSwitch}
+  />
 
-  {#if loading}
-    <div class="text-center py-8">
-      <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-      <p class="mt-4 text-gray-600">Initializing P2P connection...</p>
-      <p class="mt-2 text-xs text-gray-400">v{__APP_VERSION__}</p>
-    </div>
-  {:else if error}
-    <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-      Error: {error}
-    </div>
-  {:else}
-    <!-- Add TODO Form -->
-    <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-      <h2 class="text-xl font-semibold mb-4">Add New TODO</h2>
-      <div class="space-y-4">
-        <input
-          type="text"
-          bind:value={inputText}
-          placeholder="What needs to be done?"
-          class="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          on:keydown={(e) => e.key === 'Enter' && handleAddTodo()}
-        />
-        <div class="flex gap-2">
-          <select
-            bind:value={assigneeText}
-            class="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            <option value="">Assign to...</option>
-            {#each peers as { peerId }}
-              <option value={peerId}>{formatPeerId(peerId)}...</option>
-            {/each}
-          </select>
-          <button 
-            on:click={handleAddTodo} 
-            class="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-md font-medium transition-colors"
-          >
-            Add TODO
-          </button>
-        </div>
-      </div>
-    </div>
+  <LoadingState {loading} {error} />
+  
+  {#if !loading && !error}
+    <TodoForm 
+      bind:inputText
+      bind:assigneeText
+      {peers}
+      onAddTodo={handleAddTodo}
+    />
 
-    <!-- TODO List -->
-    <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-      <h2 class="text-xl font-semibold mb-4">TODO Items ({todos.length})</h2>
-      {#if todos.length > 0}
-        <div class="space-y-3">
-          {#each todos as { id, text, completed, assignee, createdBy }}
-            <div class="flex items-center justify-between p-3 border border-gray-200 rounded-md hover:bg-gray-50">
-              <div class="flex items-center space-x-3 flex-1">
-                <input 
-                  type="checkbox" 
-                  checked={completed} 
-                  on:change={() => handleToggleComplete(id)} 
-                  class="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                />
-                <div class="flex-1">
-                  <span class={completed ? 'line-through text-gray-500' : 'text-gray-800'}>
-                    {text}
-                  </span>
-                  <div class="text-sm text-gray-500 mt-1">
-                    {#if assignee}
-                      Assigned to: <code class="bg-gray-100 px-1 rounded">{formatPeerId(assignee)}</code>
-                    {:else}
-                      <span class="text-orange-600">Unassigned</span>
-                    {/if}
-                    • Created by: <code class="bg-gray-100 px-1 rounded">{formatPeerId(createdBy)}</code>
-                  </div>
-                </div>
-              </div>
-              <div class="flex space-x-2">
-                <!-- Assign to connected peers -->
-                {#if peers.length > 0}
-                  <select 
-                    on:change={(e) => handleAssign(id, e.target.value)}
-                    class="text-sm border border-gray-300 rounded px-2 py-1"
-                  >
-                    <option value="">Assign to...</option>
-                    {#each peers as { peerId }}
-                      <option value={peerId}>{formatPeerId(peerId)}...</option>
-                    {/each}
-                  </select>
-                {/if}
-                <button 
-                  on:click={() => handleDelete(id)} 
-                  class="text-red-500 hover:text-red-700 px-3 py-1 rounded-md transition-colors"
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          {/each}
-        </div>
-      {:else}
-        <p class="text-gray-500 text-center py-8">No TODOs yet. Add one above!</p>
-      {/if}
-    </div>
+    <TodoList 
+      {todos}
+      {peers}
+      onToggleComplete={handleToggleComplete}
+      onDelete={handleDelete}
+      onAssign={handleAssign}
+    />
 
-    <!-- P2P Status -->
-    <div class="grid md:grid-cols-2 gap-6">
-      <!-- Connected Peers -->
-      <div class="bg-white rounded-lg shadow-md p-6">
-        <h2 class="text-xl font-semibold mb-4">Connected Peers ({peers.length})</h2>
-        {#if peers.length > 0}
-          <div class="space-y-2">
-            {#each peers as { peerId, transports }}
-              <div class="flex items-center space-x-2">
-                <div class="w-2 h-2 bg-green-500 rounded-full"></div>
-                <code class="text-sm bg-gray-100 px-2 py-1 rounded">{formatPeerId(peerId)}</code>
-                {#each transports as type}
-                  {#if type === 'webrtc'}
-                    <span class="badge bg-green-200 text-green-800">WebRTC</span>
-                  {:else if type === 'circuit-relay'}
-                    <span class="badge bg-blue-200 text-blue-800">Relay</span>
-                  {:else if type === 'websocket'}
-                    <span class="badge bg-purple-200 text-purple-800">WS</span>
-                  {:else}
-                    <span class="badge bg-gray-200 text-gray-800">{type}</span>
-                  {/if}
-                {/each}
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <p class="text-gray-500">No peers connected yet.</p>
-        {/if}
-      </div>
+    <PeerStatus {peers} {myPeerId} />
 
-      <!-- My Identity -->
-      <div class="bg-white rounded-lg shadow-md p-6">
-        <h2 class="text-xl font-semibold mb-4">My Peer ID</h2>
-        {#if myPeerId}
-          <div class="bg-blue-50 p-3 rounded-md">
-            <code class="text-sm font-mono break-all">{formatPeerId(myPeerId)}</code>
-          </div>
-          <p class="text-sm text-gray-600 mt-2">Share this ID with others to assign TODOs to you.</p>
-        {:else}
-          <p class="text-gray-500">Loading...</p>
-        {/if}
-      </div>
-    </div>
+    <WritePermissions 
+      {showWritePermissions}
+      {canWriteToCurrentDB}
+      {dbAddress}
+      {selectedPeerId}
+      {writePermissionRequests}
+      {outgoingWritePermissionRequests}
+      {formatPeerId}
+      onToggleShow={() => { showWritePermissions = !showWritePermissions; updateWritePermissionRequests(); }}
+      onRequestWritePermission={handleRequestWritePermission}
+      onGrantWritePermission={handleGrantWritePermission}
+      onDenyWritePermission={handleDenyWritePermission}
+    />
 
-    <!-- Write Permissions Management -->
-    <div class="bg-white rounded-lg shadow-md p-6 mt-6">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xl font-semibold">Write Permissions</h2>
-        <button 
-          on:click={() => { showWritePermissions = !showWritePermissions; updateWritePermissionRequests(); }}
-          class="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-md transition-colors"
-        >
-          {showWritePermissions ? 'Hide Permissions' : 'Show Permissions'}
-        </button>
-      </div>
-      
-      {#if showWritePermissions}
-        <div class="space-y-6">
-          <!-- Write Permission Status -->
-          <div class="bg-gray-50 p-4 rounded-md">
-            <div class="flex items-center space-x-2 mb-2">
-              <div class="w-3 h-3 rounded-full {canWriteToCurrentDB ? 'bg-green-500' : 'bg-red-500'}"></div>
-              <span class="font-medium">
-                {canWriteToCurrentDB ? 'You can write to this database' : 'You cannot write to this database'}
-              </span>
-            </div>
-            <p class="text-sm text-gray-600">
-              Current database: <code class="bg-white px-1 rounded">{dbAddress || 'Loading...'}</code>
-            </p>
-            {#if selectedPeerId && !canWriteToCurrentDB}
-              <button 
-                on:click={() => handleRequestWritePermission(selectedPeerId)}
-                class="mt-2 text-sm bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-md transition-colors"
-              >
-                Request Write Permission from {formatPeerId(selectedPeerId)}
-              </button>
-            {/if}
-          </div>
+    <DatabaseManager 
+      {showDatabaseDetails}
+      {browserDatabases}
+      {viewingDatabase}
+      {databaseContents}
+      {storageUsage}
+      {formatBytes}
+      onRefreshDatabases={refreshDatabases}
+      onToggleShow={() => { showDatabaseDetails = !showDatabaseDetails; if (showDatabaseDetails) refreshDatabases(); }}
+      onViewDatabaseContents={viewDatabaseContents}
+      onDeleteSingleDatabase={deleteSingleDatabase}
+      onDeleteAllDatabases={deleteAllDatabases}
+      onDeleteAllInactiveDatabases={deleteAllInactiveDatabases}
+    />
 
-          <!-- Incoming Permission Requests -->
-          <div>
-            <h3 class="text-lg font-medium mb-3">Incoming Requests ({writePermissionRequests.length})</h3>
-            {#if writePermissionRequests.length > 0}
-              <div class="space-y-3">
-                {#each writePermissionRequests as request}
-                  <div class="border border-gray-200 p-3 rounded-md">
-                    <div class="flex items-center justify-between">
-                      <div class="flex-1">
-                        <div class="flex items-center space-x-2 mb-1">
-                          <span class="font-medium text-sm">From: {formatPeerId(request.requesterPeerId)}</span>
-                          <span class="text-xs px-2 py-1 rounded-full {request.status === 'pending' ? 'bg-yellow-100 text-yellow-800' : request.status === 'granted' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
-                            {request.status}
-                          </span>
-                        </div>
-                        <p class="text-sm text-gray-600 mb-1">{request.reason}</p>
-                        <p class="text-xs text-gray-500">
-                          Requested: {new Date(request.requestedAt).toLocaleString()}
-                        </p>
-                      </div>
-                      {#if request.status === 'pending'}
-                        <div class="flex space-x-2">
-                          <button 
-                            on:click={() => handleGrantWritePermission(request.id)}
-                            class="text-sm bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded-md transition-colors"
-                          >
-                            Grant
-                          </button>
-                          <button 
-                            on:click={() => handleDenyWritePermission(request.id, 'Declined by user')}
-                            class="text-sm bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-md transition-colors"
-                          >
-                            Deny
-                          </button>
-                        </div>
-                      {/if}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            {:else}
-              <p class="text-gray-500 text-sm">No incoming permission requests</p>
-            {/if}
-          </div>
-
-          <!-- Outgoing Permission Requests -->
-          <div>
-            <h3 class="text-lg font-medium mb-3">My Requests ({outgoingWritePermissionRequests.length})</h3>
-            {#if outgoingWritePermissionRequests.length > 0}
-              <div class="space-y-3">
-                {#each outgoingWritePermissionRequests as request}
-                  <div class="border border-gray-200 p-3 rounded-md">
-                    <div class="flex items-center justify-between">
-                      <div class="flex-1">
-                        <div class="flex items-center space-x-2 mb-1">
-                          <span class="font-medium text-sm">To: {formatPeerId(request.targetPeerID)}</span>
-                          <span class="text-xs px-2 py-1 rounded-full {request.status === 'pending' ? 'bg-yellow-100 text-yellow-800' : request.status === 'granted' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}">
-                            {request.status}
-                          </span>
-                        </div>
-                        <p class="text-sm text-gray-600 mb-1">{request.reason}</p>
-                        <p class="text-xs text-gray-500">
-                          Requested: {new Date(request.requestedAt).toLocaleString()}
-                          {#if request.status === 'granted' && request.grantedAt}
-                            | Granted: {new Date(request.grantedAt).toLocaleString()}
-                          {:else if request.status === 'denied' && request.deniedAt}
-                            | Denied: {new Date(request.deniedAt).toLocaleString()}
-                          {/if}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            {:else}
-              <p class="text-gray-500 text-sm">No outgoing permission requests</p>
-            {/if}
-          </div>
-        </div>
-      {:else}
-        <p class="text-sm text-gray-500">Manage write permissions for peer databases. Click "Show Permissions" to view requests.</p>
-      {/if}
-    </div>
-
-    <!-- Database Manager -->
-    <div class="bg-white rounded-lg shadow-md p-6 mt-6">
-      <div class="flex items-center justify-between mb-4">
-        <div class="flex items-center space-x-2">
-          <h2 class="text-xl font-semibold">Database Manager</h2>
-          {#if browserDatabases.length > 0}
-            <span class="bg-blue-100 text-blue-800 text-sm px-2 py-1 rounded-full">
-              {browserDatabases.length} database{browserDatabases.length !== 1 ? 's' : ''}
-            </span>
-          {/if}
-        </div>
-        <div class="flex space-x-2">
-          <button 
-            on:click={refreshDatabases}
-            class="text-sm bg-blue-100 hover:bg-blue-200 text-blue-800 px-3 py-1 rounded-md transition-colors"
-          >
-            Refresh
-          </button>
-          <button 
-            on:click={() => { showDatabaseDetails = !showDatabaseDetails; if (showDatabaseDetails) refreshDatabases(); }}
-            class="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-md transition-colors"
-          >
-            {showDatabaseDetails ? 'Hide Databases' : 'Show Databases'}
-          </button>
-        </div>
-      </div>
-      
-      {#if showDatabaseDetails}
-        {#if browserDatabases.length > 0}
-          <div class="space-y-4">
-            <!-- Database List -->
-            <div class="space-y-3">
-              {#each browserDatabases as db}
-                <div class="border rounded-lg p-4 {db.isActive ? 
-                  (db.activeType === 'orbitdb' ? 'border-green-300 bg-green-50' : 
-                   db.activeType === 'helia' ? 'border-blue-300 bg-blue-50' : 
-                   'border-purple-300 bg-purple-50') : 'border-gray-200'}">
-                  <div class="flex items-center justify-between mb-2">
-                    <div class="flex items-center space-x-3">
-                      <div class="w-3 h-3 rounded-full {db.isActive ? 
-                        (db.activeType === 'orbitdb' ? 'bg-green-500' : 
-                         db.activeType === 'helia' ? 'bg-blue-500' : 
-                         'bg-purple-500') : 'bg-gray-400'}"></div>
-                      <div>
-                        <div class="flex items-center space-x-2">
-                          <h3 class="font-medium text-lg">{db.name}</h3>
-                          {#if db.isActive}
-                            <span class="text-xs px-2 py-1 rounded-full font-medium {db.activeType === 'orbitdb' ? 'bg-green-200 text-green-800' : 
-                              db.activeType === 'helia' ? 'bg-blue-200 text-blue-800' : 
-                              'bg-purple-200 text-purple-800'}">
-                              ✨ ACTIVE {db.activeType.toUpperCase()}
-                            </span>
-                          {/if}
-                        </div>
-                        <div class="text-sm text-gray-500 space-y-1">
-                          <div class="flex items-center space-x-4">
-                            <span>Version: {db.version}</span>
-                            {#if db.totalRecords !== undefined}
-                              <span>Records: {db.totalRecords.toLocaleString()}</span>
-                            {/if}
-                            {#if db.storeNames && db.storeNames.length > 0}
-                              <span>Stores: {db.storeNames.length}</span>
-                            {/if}
-                            {#if db.isKeystore}
-                              <span class="text-yellow-600 font-medium">🔑 KEYSTORE</span>
-                            {/if}
-                          </div>
-                          {#if db.lastAccessed}
-                            <div class="text-xs text-gray-400">
-                              Last accessed: {new Date(db.lastAccessed).toLocaleString()}
-                            </div>
-                          {:else}
-                            <div class="text-xs text-gray-400">
-                              Last accessed: Unknown
-                            </div>
-                          {/if}
-                          
-                          {#if db.isKeystore && db.keystoreKeys && db.keystoreKeys.length > 0}
-                            <div class="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs">
-                              <div class="font-medium text-yellow-800 mb-1">Keystore Contents:</div>
-                              {#each db.keystoreKeys as keystore}
-                                <div class="mb-2">
-                                  <div class="font-medium text-yellow-700">Store: {keystore.storeName}</div>
-                                  <div class="text-yellow-600">Keys: {keystore.keyCount}</div>
-                                  
-                                  {#if keystore.keys && keystore.keys.length > 0}
-                                    <div class="mt-1">
-                                      <div class="text-yellow-700 font-medium">Key IDs:</div>
-                                      <div class="text-yellow-600 break-all">
-                                        {keystore.keys.slice(0, 3).join(', ')}
-                                        {#if keystore.keys.length > 3}
-                                          ... and {keystore.keys.length - 3} more
-                                        {/if}
-                                      </div>
-                                    </div>
-                                  {/if}
-                                  
-                                  {#if keystore.sampleRecords && keystore.sampleRecords.length > 0}
-                                    <div class="mt-1">
-                                      <div class="text-yellow-700 font-medium">Sample Records:</div>
-                                      {#each keystore.sampleRecords.slice(0, 2) as record}
-                                        <div class="text-yellow-600 text-xs bg-yellow-100 p-1 rounded mt-1">
-                                          {#if record.id}
-                                            <strong>ID:</strong> {record.id}<br>
-                                          {/if}
-                                          {#if record.name}
-                                            <strong>Name:</strong> {record.name}<br>
-                                          {/if}
-                                          {#if record.keyType}
-                                            <strong>Type:</strong> {record.keyType}<br>
-                                          {/if}
-                                          {#if record.algorithm}
-                                            <strong>Algorithm:</strong> {record.algorithm}<br>
-                                          {/if}
-                                          {#if record.hasPublicKey}
-                                            <strong>Has Public Key:</strong> Yes<br>
-                                          {/if}
-                                          {#if record.hasPrivateKey}
-                                            <strong>Has Private Key:</strong> Yes<br>
-                                          {/if}
-                                          {#if record.usages}
-                                            <strong>Usages:</strong> {JSON.stringify(record.usages)}<br>
-                                          {/if}
-                                          {#if record.dataLength}
-                                            <strong>Data Length:</strong> {record.dataLength} bytes<br>
-                                          {/if}
-                                          {#if record.value}
-                                            <strong>Value:</strong> {record.value}<br>
-                                          {/if}
-                                        </div>
-                                      {/each}
-                                      {#if keystore.sampleRecords.length > 2}
-                                        <div class="text-yellow-600 text-xs mt-1">
-                                          ... and {keystore.sampleRecords.length - 2} more records
-                                        </div>
-                                      {/if}
-                                    </div>
-                                  {/if}
-                                </div>
-                              {/each}
-                            </div>
-                          {:else if db.isKeystore}
-                            <div class="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-600">
-                              🔑 This is a keystore database, but no key data could be extracted.
-                            </div>
-                          {/if}
-                        </div>
-                      </div>
-                    </div>
-                    <div class="flex space-x-2">
-                      <button 
-                        on:click={() => viewDatabaseContents(db.name)}
-                        class="text-sm bg-green-100 hover:bg-green-200 text-green-800 px-3 py-1 rounded-md transition-colors"
-                      >
-                        View Contents
-                      </button>
-                      <button 
-                        on:click={() => deleteSingleDatabase(db.name)}
-                        class="text-sm bg-red-100 hover:bg-red-200 text-red-800 px-3 py-1 rounded-md transition-colors"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </div>
-                  
-                  <!-- Database Contents (if viewing) -->
-                  {#if viewingDatabase === db.name && databaseContents[db.name]}
-                    <div class="mt-3 p-3 bg-gray-50 rounded-md">
-                      <h4 class="font-medium text-sm mb-2">Object Stores:</h4>
-                      {#each databaseContents[db.name] as store}
-                        <div class="mb-3 p-2 bg-white rounded">
-                          <div class="flex items-center justify-between mb-1">
-                            <span class="font-medium text-sm">{store.name}</span>
-                            <span class="text-xs text-gray-500">{store.count} records</span>
-                          </div>
-                          {#if store.records && store.records.length > 0}
-                            <div class="text-xs bg-gray-100 p-2 rounded max-h-32 overflow-y-auto">
-                              <pre class="whitespace-pre-wrap">{JSON.stringify(store.records.slice(0, 5), null, 2)}</pre>
-                              {#if store.records.length > 5}
-                                <p class="text-gray-500 mt-1">... and {store.records.length - 5} more records</p>
-                              {/if}
-                            </div>
-                          {:else}
-                            <p class="text-xs text-gray-500">No records found</p>
-                          {/if}
-                        </div>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-            
-            <!-- Bulk Actions -->
-            <div class="border-t pt-4">
-              <div class="flex items-center justify-between">
-                <span class="text-sm text-gray-600">Found {browserDatabases.length} database(s)</span>
-                <button 
-                  on:click={deleteAllDatabases}
-                  class="text-sm bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md transition-colors"
-                >
-                  Delete All Databases
-                </button>
-              </div>
-            </div>
-          </div>
-        {:else}
-          <div class="text-center py-8">
-            <p class="text-gray-500">No Libp2p/IPFS/OrbitDB databases found</p>
-            <p class="text-xs text-gray-400 mt-2">Databases appear here when you use the P2P features</p>
-          </div>
-        {/if}
-      {:else}
-        <p class="text-sm text-gray-500">Manage IndexedDB databases created by Libp2p, Helia, and OrbitDB. Click "Show Databases" to view and manage them.</p>
-      {/if}
-    </div>
-
-    <!-- Relay Discovery Status (Debug Section) -->
-    <div class="bg-white rounded-lg shadow-md p-6 mt-6">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xl font-semibold">Relay Discovery Status</h2>
-        <div class="flex space-x-2">
-          <button 
-            on:click={async () => {
-              relayStatus = await getRelayDiscoveryStatus()
-              
-              // Also fetch discovery result to get full address info
-              try {
-                const discoveryResult = await discoverRelay()
-                relayStatus.discoveryResult = discoveryResult
-              } catch (error) {
-                console.warn('Failed to fetch discovery result:', error)
-              }
-              
-              showRelayDetails = !showRelayDetails
-            }}
-            class="text-sm bg-gray-100 hover:bg-gray-200 px-3 py-1 rounded-md transition-colors"
-          >
-            {showRelayDetails ? 'Hide Details' : 'Show Details'}
-          </button>
+    <RelayStatus 
+      {showRelayDetails}
+      {relayStatus}
+      {formatPeerId}
+      onToggleShow={async () => {
+        relayStatus = await getRelayDiscoveryStatus()
+        
+        // Also fetch discovery result to get full address info
+        try {
+          const discoveryResult = await discoverRelay()
+          relayStatus.discoveryResult = discoveryResult
+        } catch (error) {
+          console.warn('Failed to fetch discovery result:', error)
+        }
+        
+        showRelayDetails = !showRelayDetails
+      }}
+      onRefreshCache={async () => {
+        console.log('🔘 Refresh Cache button clicked!');
+        
+        try {
+          // First ensure relay discovery is properly configured
+          console.log('📊 Getting relay discovery status to ensure proper configuration...');
+          await getRelayDiscoveryStatus();
           
-          {#if showRelayDetails}
-            <button 
-              on:click={async () => {
-                console.log('🔘 Refresh Cache button clicked!');
-                
-                try {
-                  // First ensure relay discovery is properly configured
-                  console.log('📊 Getting relay discovery status to ensure proper configuration...');
-                  await getRelayDiscoveryStatus();
-                  
-                  // Clear cache and fetch fresh data
-                  const { getRelayDiscovery } = await import('./utils/relay-discovery.js')
-                  const relayDiscoveryInstance = getRelayDiscovery();
-                  console.log('🔧 Using relay discovery instance with URL:', relayDiscoveryInstance.relayHttpUrl);
-                  
-                  relayDiscoveryInstance.clearCache()
-                  console.log('🧹 Cleared relay discovery cache')
-                  
-                  // Immediately fetch fresh data
-                  relayStatus = await getRelayDiscoveryStatus()
-                  console.log('📊 Updated relay status:', relayStatus);
-                  
-                  const discoveryResult = await discoverRelay()
-                  relayStatus.discoveryResult = discoveryResult
-                  console.log('🔄 Fetched fresh relay discovery data:', discoveryResult);
-                  
-                } catch (error) {
-                  console.error('❌ Error during refresh:', error);
-                }
-              }}
-              class="text-sm bg-blue-100 hover:bg-blue-200 text-blue-800 px-3 py-1 rounded-md transition-colors"
-            >
-              Refresh Cache
-            </button>
-          {/if}
-        </div>
-      </div>
-      
-      {#if showRelayDetails}
-        {#if relayStatus}
-          <div class="space-y-3">
-            <div class="flex items-center space-x-2">
-              <div class="w-3 h-3 rounded-full {relayStatus.healthy ? 'bg-green-500' : 'bg-red-500'}"></div>
-              <span class="font-medium">Relay Server: {relayStatus.healthy ? 'Healthy' : 'Unhealthy'}</span>
-              <span class="text-xs px-2 py-1 rounded-full {relayStatus.bootstrapConfig?.isDevelopment ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}">
-                {relayStatus.bootstrapConfig?.isDevelopment ? 'Development (localhost)' : 'Production (public)'}
-              </span>
-            </div>
-            
-            <div class="text-sm text-gray-600">
-              <p><strong>WebRTC Address Cache:</strong> 
-                {#if relayStatus.cacheValid}
-                  <span class="text-green-600">Valid (cached {Math.round(relayStatus.cacheAge / 1000)}s ago)</span>
-                {:else}
-                  <span class="text-orange-600">Expired or missing - will fetch from relay on next connection</span>
-                {/if}
-              </p>
-              <p class="text-xs text-gray-500 mt-1">Caches WebRTC multiaddresses from the relay to avoid repeated HTTP requests</p>
-              
-              <!-- Bootstrap Configuration -->
-              {#if relayStatus.bootstrapConfig}
-                <p class="mt-2"><strong>Bootstrap Relay:</strong> <code class="bg-white px-1 rounded text-xs">{relayStatus.bootstrapConfig.currentBootstrapAddr}</code></p>
-                <p class="text-xs text-gray-500 mt-1">This is the LibP2P relay server used for peer discovery and circuit relay</p>
-              {/if}
-              
-              <!-- Relay Server Information -->
-              <p class="mt-2"><strong>Relay HTTP Server:</strong> <code class="bg-white px-1 rounded text-xs">{relayStatus.relayHttpUrl || 'Unknown'}</code></p>
-              <p class="text-xs text-gray-500 mt-1">This is the HTTP server for health checks and multiaddr discovery (different from the LibP2P relay above)</p>
-              
-              {#if relayStatus.discoveryResult}
-                <p class="mt-2"><strong>Relay Peer ID:</strong> <code class="bg-white px-1 rounded text-xs">{formatPeerId(relayStatus.discoveryResult.peerId)}</code></p>
-              {/if}
-              
-              {#if relayStatus.addresses || relayStatus.discoveryResult}
-                <p class="mt-2"><strong>Available Multiaddresses:</strong></p>
-                <div class="mt-1 space-y-1">
-                  {#if relayStatus.addresses?.direct || relayStatus.discoveryResult?.direct}
-                    <div class="bg-green-50 p-2 rounded border-l-4 border-green-400">
-                      <code class="text-xs">{relayStatus.addresses?.direct || relayStatus.discoveryResult?.direct}</code>
-                      <span class="text-green-600 text-xs ml-2">(Direct WebRTC)</span>
-                    </div>
-                  {/if}
-                  {#if relayStatus.addresses?.circuitRelay || relayStatus.discoveryResult?.circuitRelay}
-                    <div class="bg-blue-50 p-2 rounded border-l-4 border-blue-400">
-                      <code class="text-xs">{relayStatus.addresses?.circuitRelay || relayStatus.discoveryResult?.circuitRelay}</code>
-                      <span class="text-blue-600 text-xs ml-2">(Circuit Relay)</span>
-                    </div>
-                  {/if}
-                  {#if relayStatus.addresses?.websocket || relayStatus.discoveryResult?.websocket}
-                    <div class="bg-purple-50 p-2 rounded border-l-4 border-purple-400">
-                      <code class="text-xs">{relayStatus.addresses?.websocket || relayStatus.discoveryResult?.websocket}</code>
-                      <span class="text-purple-600 text-xs ml-2">(WebSocket)</span>
-                    </div>
-                  {/if}
-                  
-                  <!-- Show all WebRTC addresses if available -->
-                  {#if relayStatus.discoveryResult?.webrtc && relayStatus.discoveryResult.webrtc.length > 0}
-                    <div class="mt-2">
-                      <p class="text-sm font-medium text-gray-700">All WebRTC Addresses:</p>
-                      {#each relayStatus.discoveryResult.webrtc as addr}
-                        <div class="bg-gray-50 p-1 rounded mt-1">
-                          <code class="text-xs">{addr}</code>
-                        </div>
-                      {/each}
-                    </div>
-                  {/if}
-                </div>
-              {:else}
-                <p class="text-red-600">No multiaddresses available</p>
-              {/if}
-              
-              {#if relayStatus.error}
-                <p class="text-red-600 mt-2"><strong>Error:</strong> {relayStatus.error}</p>
-              {/if}
-            </div>
-          </div>
-        {:else}
-          <p class="text-gray-500">Click "Show Details" to check relay discovery status</p>
-        {/if}
-      {:else}
-        <p class="text-sm text-gray-500">Relay discovery provides WebRTC addresses with smart caching to avoid unnecessary requests on page reload.</p>
-      {/if}
-    </div>
+          // Clear cache and fetch fresh data
+          const { getRelayDiscovery } = await import('./utils/relay-discovery.js')
+          const relayDiscoveryInstance = getRelayDiscovery();
+          console.log('🔧 Using relay discovery instance with URL:', relayDiscoveryInstance.relayHttpUrl);
+          
+          relayDiscoveryInstance.clearCache()
+          console.log('🧹 Cleared relay discovery cache')
+          
+          // Immediately fetch fresh data
+          relayStatus = await getRelayDiscoveryStatus()
+          console.log('📊 Updated relay status:', relayStatus);
+          
+          const discoveryResult = await discoverRelay()
+          relayStatus.discoveryResult = discoveryResult
+          console.log('🔄 Fetched fresh relay discovery data:', discoveryResult);
+          
+        } catch (error) {
+          console.error('❌ Error during refresh:', error);
+        }
+      }}
+    />
     {/if}
   </main>
 

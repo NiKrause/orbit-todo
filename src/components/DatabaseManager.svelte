@@ -3,11 +3,14 @@
   export let browserDatabases;
   export let viewingDatabase;
   export let databaseContents;
+  export let storageUsage;
+  export let formatBytes;
   export let onRefreshDatabases;
   export let onToggleShow;
   export let onViewDatabaseContents;
   export let onDeleteSingleDatabase;
   export let onDeleteAllDatabases;
+  export let onDeleteAllInactiveDatabases;
 </script>
 
 <div class="bg-white rounded-lg shadow-md p-6 mt-6">
@@ -36,8 +39,123 @@
     </div>
   </div>
   
+  <!-- Storage Usage Summary -->
+  {#if storageUsage && showDatabaseDetails}
+    <div class="mb-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg">
+      <h3 class="text-lg font-semibold text-blue-900 mb-3">💾 Storage Usage Summary</h3>
+      
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- Overall Storage -->
+        <div class="bg-white p-3 rounded-lg border">
+          <h4 class="font-medium text-gray-800 mb-2">Overall Browser Storage</h4>
+          <div class="text-sm space-y-1">
+            <div class="flex justify-between">
+              <span class="text-gray-600">Used:</span>
+              <span class="font-mono">{formatBytes ? formatBytes(storageUsage.used) : '0 Bytes'}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-600">Quota:</span>
+              <span class="font-mono">{formatBytes ? formatBytes(storageUsage.quota) : 'Unknown'}</span>
+            </div>
+            {#if storageUsage.quota > 0}
+              <div class="mt-2">
+                <div class="w-full bg-gray-200 rounded-full h-2">
+                  <div 
+                    class="bg-blue-500 h-2 rounded-full" 
+                    style="width: {Math.min(100, (storageUsage.used / storageUsage.quota) * 100)}%"
+                  ></div>
+                </div>
+                <div class="text-xs text-gray-500 mt-1">
+                  {((storageUsage.used / storageUsage.quota) * 100).toFixed(1)}% used
+                </div>
+              </div>
+            {/if}
+          </div>
+        </div>
+        
+        <!-- P2P Database Storage -->
+        <div class="bg-white p-3 rounded-lg border">
+          <h4 class="font-medium text-gray-800 mb-2">P2P Database Storage</h4>
+          <div class="text-sm space-y-1">
+            <div class="flex justify-between">
+              <span class="text-gray-600">Total Size:</span>
+              <span class="font-mono font-semibold">{formatBytes ? formatBytes(storageUsage.p2pDatabases.totalSize) : '0 Bytes'}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-600">Active DBs:</span>
+              <span class="font-mono text-green-600">{formatBytes ? formatBytes(storageUsage.p2pDatabases.activeDatabasesSize) : '0 Bytes'}</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-600">Inactive DBs:</span>
+              <span class="font-mono text-orange-600">{formatBytes ? formatBytes(storageUsage.p2pDatabases.inactiveDatabasesSize) : '0 Bytes'}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Database Type Breakdown -->
+      <div class="mt-4 bg-white p-3 rounded-lg border">
+        <h4 class="font-medium text-gray-800 mb-2">📊 Storage by Database Type</h4>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div class="text-center p-2 bg-green-50 rounded border">
+            <div class="text-green-700 font-semibold">OrbitDB</div>
+            <div class="text-xs text-green-600">{storageUsage.p2pDatabases.byType.orbitdb.count} database{storageUsage.p2pDatabases.byType.orbitdb.count !== 1 ? 's' : ''}</div>
+            <div class="font-mono text-green-800">{formatBytes ? formatBytes(storageUsage.p2pDatabases.byType.orbitdb.size) : '0 Bytes'}</div>
+          </div>
+          <div class="text-center p-2 bg-blue-50 rounded border">
+            <div class="text-blue-700 font-semibold">Helia/IPFS</div>
+            <div class="text-xs text-blue-600">{storageUsage.p2pDatabases.byType.helia.count} database{storageUsage.p2pDatabases.byType.helia.count !== 1 ? 's' : ''}</div>
+            <div class="font-mono text-blue-800">{formatBytes ? formatBytes(storageUsage.p2pDatabases.byType.helia.size) : '0 Bytes'}</div>
+          </div>
+          <div class="text-center p-2 bg-purple-50 rounded border">
+            <div class="text-purple-700 font-semibold">Libp2p</div>
+            <div class="text-xs text-purple-600">{storageUsage.p2pDatabases.byType.libp2p.count} database{storageUsage.p2pDatabases.byType.libp2p.count !== 1 ? 's' : ''}</div>
+            <div class="font-mono text-purple-800">{formatBytes ? formatBytes(storageUsage.p2pDatabases.byType.libp2p.size) : '0 Bytes'}</div>
+          </div>
+          <div class="text-center p-2 bg-gray-50 rounded border">
+            <div class="text-gray-700 font-semibold">Other</div>
+            <div class="text-xs text-gray-600">{storageUsage.p2pDatabases.byType.other.count} database{storageUsage.p2pDatabases.byType.other.count !== 1 ? 's' : ''}</div>
+            <div class="font-mono text-gray-800">{formatBytes ? formatBytes(storageUsage.p2pDatabases.byType.other.size) : '0 Bytes'}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  {/if}
+  
   {#if showDatabaseDetails}
     {#if browserDatabases.length > 0}
+      <!-- Database Summary and Bulk Actions -->
+      <div class="mb-6 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+        <div class="flex items-center justify-between">
+          <div class="text-sm text-gray-600">
+            <span class="font-semibold text-gray-800">Found {browserDatabases.length} database(s)</span>
+            <div class="text-xs text-gray-500 mt-1">
+              {browserDatabases.filter(db => db.isActive).length} active • 
+              {browserDatabases.filter(db => !db.isActive).length} inactive
+              {#if storageUsage && formatBytes}
+                • Total: {formatBytes(storageUsage.p2pDatabases.totalSize)}
+              {/if}
+            </div>
+          </div>
+          <div class="flex space-x-2">
+            {#if browserDatabases.filter(db => !db.isActive).length > 0}
+              <button 
+                on:click={onDeleteAllInactiveDatabases}
+                class="text-sm bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-md transition-colors"
+              >
+                Delete All Inactive ({browserDatabases.filter(db => !db.isActive).length})
+              </button>
+            {/if}
+            <button 
+              on:click={onDeleteAllDatabases}
+              class="text-sm bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md transition-colors"
+            >
+              Delete All Databases
+            </button>
+          </div>
+        </div>
+      </div>
+      
       <div class="space-y-4">
         <!-- Database List -->
         <div class="space-y-3">
@@ -71,6 +189,11 @@
                         {/if}
                         {#if db.storeNames && db.storeNames.length > 0}
                           <span>Stores: {db.storeNames.length}</span>
+                        {/if}
+                        {#if db.estimatedSize !== undefined && formatBytes}
+                          <span class="font-mono text-blue-600 bg-blue-50 px-2 py-1 rounded">
+                            📦 {formatBytes(db.estimatedSize)}
+                          </span>
                         {/if}
                         {#if db.isKeystore}
                           <span class="text-yellow-600 font-medium">🔑 KEYSTORE</span>
@@ -200,19 +323,6 @@
               {/if}
             </div>
           {/each}
-        </div>
-        
-        <!-- Bulk Actions -->
-        <div class="border-t pt-4">
-          <div class="flex items-center justify-between">
-            <span class="text-sm text-gray-600">Found {browserDatabases.length} database(s)</span>
-            <button 
-              on:click={onDeleteAllDatabases}
-              class="text-sm bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-md transition-colors"
-            >
-              Delete All Databases
-            </button>
-          </div>
         </div>
       </div>
     {:else}
