@@ -1,7 +1,7 @@
-import { RelayDiscovery } from '../../utils/relay-discovery.js'
+import { RelayDiscovery, setRelayDiscovery } from '../../utils/relay-discovery.js'
 import { runHealthCheck, runHealthCheckAndRecover } from '../../utils/db-health-check.js'
 import { fromString as uint8ArrayFromString } from 'uint8arrays/from-string'
-import { getLibP2P, getHelia, stopP2P } from './network.js'
+import { getLibP2P, getHelia, stopP2P, getBootstrapConfig } from './network.js'
 import { getOrbitDB, getCurrentTodoDB, stopOrbitDB } from './database.js'
 import { getTodoDatabase } from './database.js'
 
@@ -12,29 +12,46 @@ let relayDiscovery = null
  */
 export async function getRelayDiscoveryStatus() {
   if (!relayDiscovery) {
-    relayDiscovery = new RelayDiscovery(window.location.origin)
+    // Use the correct relay HTTP server URL based on the actual bootstrap configuration
+    const bootstrapConfig = getBootstrapConfig()
+    const isDevelopment = bootstrapConfig.isDevelopment
+    const relayHttpUrl = isDevelopment 
+      ? 'http://127.0.0.1:3000'  // Development relay HTTP server
+      : 'http://91-99-67-170.k51qzi5uqu5dl6dk0zoaocksijnghdrkxir5m4yfcodish4df6re6v3wbl6njf.libp2p.direct:4000'  // Production relay HTTP server
+    
+    console.log('🔧 Creating RelayDiscovery with HTTP URL:', relayHttpUrl, '(based on bootstrap:', bootstrapConfig.currentBootstrapAddr, ')')
+    relayDiscovery = new RelayDiscovery(relayHttpUrl)
+    
+    // Set this as the global singleton instance
+    setRelayDiscovery(relayDiscovery)
   }
   
   try {
     const isHealthy = await relayDiscovery.isRelayHealthy()
     const addresses = relayDiscovery.cachedAddrs
     const lastFetch = relayDiscovery.lastFetch
+    const bootstrapConfig = getBootstrapConfig()
     
     return {
       healthy: isHealthy,
       addresses: addresses,
       lastFetch: lastFetch,
       cacheAge: lastFetch ? Date.now() - lastFetch : null,
-      cacheValid: addresses && lastFetch && (Date.now() - lastFetch) < relayDiscovery.cacheTTL
+      cacheValid: addresses && lastFetch && (Date.now() - lastFetch) < relayDiscovery.cacheTTL,
+      relayHttpUrl: relayDiscovery.relayHttpUrl,
+      bootstrapConfig: bootstrapConfig
     }
   } catch (error) {
+    const bootstrapConfig = getBootstrapConfig()
     return {
       healthy: false,
       error: error.message,
       addresses: null,
       lastFetch: null,
       cacheAge: null,
-      cacheValid: false
+      cacheValid: false,
+      relayHttpUrl: relayDiscovery?.relayHttpUrl || 'unknown',
+      bootstrapConfig: bootstrapConfig
     }
   }
 }

@@ -16,11 +16,11 @@ import { autoNAT } from '@libp2p/autonat'
 import { keychain } from '@libp2p/keychain'
 import { autoTLS } from '@ipshipyard/libp2p-auto-tls'
 import { config } from 'dotenv'
-import express from 'express'
 import { tls } from '@libp2p/tls'
 import { uPnPNAT } from '@libp2p/upnp-nat'
 import { prometheusMetrics } from '@libp2p/prometheus-metrics'
 import { initializeStorage, closeStorage } from './services/storage.js'
+import { createExpressServer, startExpressServer } from './services/express.js'
 
 // Load environment variables
 config()
@@ -167,22 +167,22 @@ const libp2pOptions = {
     
     // Enhanced gossipsub configuration
     pubsub: gossipsub({
-      emitSelf: true,
-      allowPublishToZeroTopicPeers: true,
-      canRelayMessage: true,
-      gossipIncoming: true,
-      fallbackToFloodsub: true,
-      floodPublish: true,
+      emitSelf: process.env.GOSSIP_EMIT_SELF === 'true',
+      allowPublishToZeroTopicPeers: process.env.GOSSIP_ALLOW_PUBLISH_ZERO_TOPIC === 'true',
+      canRelayMessage: process.env.GOSSIP_CAN_RELAY_MESSAGE === 'true',
+      gossipIncoming: process.env.GOSSIP_INCOMING === 'true',
+      fallbackToFloodsub: process.env.GOSSIP_FALLBACK_TO_FLOODSUB === 'true',
+      floodPublish: process.env.GOSSIP_FLOOD_PUBLISH === 'true',
       // Disable peer scoring to avoid blocking during development
       scoreParams: {
-        gossipThreshold: -Infinity,
-        publishThreshold: -Infinity,
-        graylistThreshold: -Infinity,
-        acceptPXThreshold: 0,
-        opportunisticGraftThreshold: 0
+        gossipThreshold: Number(process.env.GOSSIP_SCORE_GOSSIP_THRESHOLD) || -Infinity,
+        publishThreshold: Number(process.env.GOSSIP_SCORE_PUBLISH_THRESHOLD) || -Infinity,
+        graylistThreshold: Number(process.env.GOSSIP_SCORE_GRAYLIST_THRESHOLD) || -Infinity,
+        acceptPXThreshold: Number(process.env.GOSSIP_SCORE_ACCEPT_PX_THRESHOLD) || 0,
+        opportunisticGraftThreshold: Number(process.env.GOSSIP_SCORE_OPPORTUNISTIC_GRAFT_THRESHOLD) || 0
       },
       // Enhanced mesh maintenance
-      heartbeatInterval: 1000
+      heartbeatInterval: Number(process.env.GOSSIP_HEARTBEAT_INTERVAL) || 1000
     }),
     
     // UPnP NAT traversal
@@ -191,12 +191,12 @@ const libp2pOptions = {
     // Enhanced circuit relay server configuration
     relay: circuitRelayServer({
       // Production-ready relay configuration based on reference
-      hopTimeout: 30000, // 30 seconds
+      hopTimeout: Number(process.env.RELAY_HOP_TIMEOUT) || 30000, // 30 seconds
       reservations: {
-        maxReservations: 1000, // Increased from 5000 to reasonable production limit
-        reservationTtl: 2 * 60 * 60 * 1000, // 2 hours (matches reference)
-        defaultDataLimit: BigInt(1024 * 1024 * 1024), // 1GB
-        defaultDurationLimit: 2 * 60 * 1000 // 2 minutes
+        maxReservations: Number(process.env.RELAY_MAX_RESERVATIONS) || 10000, // Increased from 5000 to reasonable production limit
+        reservationTtl: Number(process.env.RELAY_RESERVATION_TTL) || 2 * 60 * 60 * 1000, // 2 hours (matches reference)
+        defaultDataLimit: BigInt(process.env.RELAY_DEFAULT_DATA_LIMIT || 1024 * 1024 * 1024), // 1GB
+        defaultDurationLimit: Number(process.env.RELAY_DEFAULT_DURATION_LIMIT) || 2 * 60 * 1000 // 2 minutes
       }
     }),
     
@@ -390,131 +390,30 @@ console.log('  Relay PeerId:', server.peerId.toString())
 console.log('  Multiaddrs:')
 server.getMultiaddrs().forEach(ma => console.log(`    ${ma.toString()}`))
 
-// Create enhanced HTTP API server
-const app = express()
-
-// Enhanced CORS configuration
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*')
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization')
-  next()
-})
-
-app.use(express.json())
-
-// Enhanced multiaddrs endpoint with more information
-app.get('/multiaddrs', (req, res) => {
-  const multiaddrs = server.getMultiaddrs().map(ma => ma.toString())
-  const webrtcAddrs = multiaddrs.filter(ma => ma.includes('webrtc'))
-  const tcpAddrs = multiaddrs.filter(ma => ma.includes('/tcp/') && !ma.includes('/ws'))
-  const wsAddrs = multiaddrs.filter(ma => ma.includes('/ws'))
-  
-  res.json({
-    peerId: server.peerId.toString(),
-    all: multiaddrs,
-    byTransport: {
-      webrtc: webrtcAddrs,
-      tcp: tcpAddrs,
-      websocket: wsAddrs
-    },
-    timestamp: new Date().toISOString()
-  })
-})
-
-// Enhanced health check with system information
-app.get('/health', (req, res) => {
-  const connections = server.getConnections()
-  const uptime = process.uptime()
-  
-  res.json({
-    status: 'ok',
-    peerId: server.peerId.toString(),
-    uptime: Math.round(uptime),
-    connections: {
-      active: connections.length,
-      peak: peerStats.peakConnections,
-      total: peerStats.totalConnections
-    },
-    transports: peerStats.connectionsByTransport,
-    multiaddrs: server.getMultiaddrs().length,
-    timestamp: new Date().toISOString()
-  })
-})
-
-// Enhanced peers endpoint with detailed statistics
-app.get('/peers', (req, res) => {
-  const peers = Array.from(connectedPeers.values()).map(peer => ({
-    peerId: peer.peerIdShort,
-    transport: peer.transport,
-    connectedAt: peer.connectedAt,
-    connectionCount: peer.connectionCount,
-    duration: Math.round((Date.now() - new Date(peer.connectedAt).getTime()) / 1000) + 's'
-  }))
-  
-  res.json({
-    totalConnected: connectedPeers.size,
-    peakConnections: peerStats.peakConnections,
-    totalConnectionsEver: peerStats.totalConnections,
-    transportStats: peerStats.connectionsByTransport,
-    peers,
-    timestamp: new Date().toISOString()
-  })
-})
-
-// Enhanced metrics endpoint (Prometheus-compatible if enabled)
-app.get('/metrics', (req, res) => {
-  if (server.metrics) {
-    res.set('Content-Type', 'text/plain')
-    res.send(server.metrics.toString())
-  } else {
-    res.json({ error: 'Metrics not enabled' })
-  }
-})
-
-// Test pubsub endpoint (existing)
-app.post('/test-pubsub', express.json(), async (req, res) => {
-  const testMsg = req.body?.msg || JSON.stringify({
-    peerId: 'test-peer',
-    dbAddress: 'test-address',
-    timestamp: new Date().toISOString()
-  })
-  
-  try {
-    await server.services.pubsub.publish(
-      'orbitdb-address',
-      Buffer.from(typeof testMsg === 'string' ? testMsg : JSON.stringify(testMsg))
-    )
-    res.json({ success: true, sent: testMsg })
-    console.log('[relay] Sent test pubsub message:', testMsg)
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message })
-    console.error('[relay] Failed to send test pubsub message:', e)
-  }
-})
-
-// Start HTTP server
-app.listen(httpPort, () => {
-  console.log(`\n🌐 HTTP API Server:`)
-  console.log(`  - Running on port: ${httpPort}`)
-  console.log(`  - Multiaddrs: http://localhost:${httpPort}/multiaddrs`)
-  console.log(`  - Health check: http://localhost:${httpPort}/health`)
-  console.log(`  - Connected peers: http://localhost:${httpPort}/peers`)
-  console.log(`  - Metrics: http://localhost:${httpPort}/metrics`)
-  console.log(`  - Test pubsub: POST http://localhost:${httpPort}/test-pubsub`)
-  
-  console.log(`\n✨ Enhanced Relay Server Ready!`)
-  console.log(`   Peer ID: ${server.peerId.toString()}`)
-  console.log(`   Use --verbose flag for detailed logging`)
-  console.log(`   Use STRUCTURED_LOGS=true for JSON logging`)
-})
+// Create and start HTTP API server using Express service
+const app = createExpressServer(server, connectedPeers, peerStats)
+let httpServer
+try {
+  httpServer = await startExpressServer(app, httpPort, server)
+} catch (error) {
+  console.error('❌ Failed to start HTTP server:', error)
+  process.exit(1)
+}
 
 // Enhanced graceful shutdown
 const gracefulShutdown = async (signal) => {
-  console.log(`\n🛑 Received ${signal}, shutting down gracefully...`)
+  console.log(`\n🛁 Received ${signal}, shutting down gracefully...`)
   
   try {
-    console.log('⏳ Closing HTTP server...')
+    if (httpServer) {
+      console.log('⏳ Closing HTTP server...')
+      await new Promise((resolve) => {
+        httpServer.close(() => {
+          console.log('✅ HTTP server closed')
+          resolve()
+        })
+      })
+    }
     
     console.log('⏳ Stopping libp2p node...')
     await server.stop()

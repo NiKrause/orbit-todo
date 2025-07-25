@@ -4,7 +4,7 @@
  */
 
 export class RelayDiscovery {
-    constructor(relayHttpUrl = 'http://localhost:3000') {
+    constructor(relayHttpUrl = 'http://127.0.0.1:3000') {
         this.relayHttpUrl = relayHttpUrl;
         this.cachedAddrs = null;
         this.lastFetch = null;
@@ -27,24 +27,43 @@ export class RelayDiscovery {
         }
 
         try {
-            console.log('🔍 Discovering WebRTC multiaddrs from relay server...');
+            console.log('🔍 Discovering WebRTC multiaddrs from relay server:', this.relayHttpUrl);
             
             const response = await fetch(`${this.relayHttpUrl}/multiaddrs`);
+            console.log('📡 Response status:', response.status, response.statusText);
+            
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
 
             const data = await response.json();
+            console.log('📦 Raw server response:', data);
             
             // Process and categorize addresses
+            // The server returns addresses in byTransport.webrtc format
+            const webrtcAddrs = data.byTransport?.webrtc || [];
+            const websocketAddrs = data.byTransport?.websocket || [];
+            
+            console.log('🔧 Extracted addresses:', {
+                webrtcAddrs,
+                websocketAddrs,
+                byTransportExists: !!data.byTransport,
+                webrtcExists: !!data.byTransport?.webrtc
+            });
+            
             const result = {
                 peerId: data.peerId,
                 timestamp: data.timestamp,
                 all: data.all,
-                webrtc: data.webrtc,
-                direct: data.webrtc.find(addr => addr.includes('/tcp/') && addr.includes('/webrtc')),
-                circuitRelay: data.webrtc.find(addr => addr.includes('/p2p-circuit/webrtc')),
-                websocket: data.all.find(addr => addr.includes('/ws'))
+                webrtc: webrtcAddrs,
+                // Use best addresses if available from enhanced relay server
+                direct: data.best?.webrtc || webrtcAddrs.find(addr => addr.includes('/webrtc-direct/')),
+                // Look for circuit relay WebRTC addresses
+                circuitRelay: webrtcAddrs.find(addr => addr.includes('/p2p-circuit/webrtc')),
+                // Use best websocket or fallback to first available
+                websocket: data.best?.websocket || websocketAddrs.find(addr => addr.includes('/ws/')) || data.all.find(addr => addr.includes('/ws/')),
+                // Include address quality info if available
+                addressInfo: data.addressInfo
             };
 
             // Cache the result in memory and localStorage
@@ -55,8 +74,12 @@ export class RelayDiscovery {
             console.log('✅ WebRTC addresses discovered:', {
                 direct: result.direct,
                 circuitRelay: result.circuitRelay,
+                websocket: result.websocket,
+                webrtcCount: result.webrtc.length,
                 cached: 'saved to localStorage'
             });
+            
+            console.log('📋 Final result object:', result);
 
             return result;
 
@@ -174,15 +197,33 @@ export class RelayDiscovery {
     }
 }
 
-// Singleton instance for convenience
-export const relayDiscovery = new RelayDiscovery();
+// Singleton instance for convenience - will be configured by diagnostics
+let relayDiscovery = null;
+
+/**
+ * Get or create the relay discovery instance with correct URL
+ */
+export function getRelayDiscovery() {
+  if (!relayDiscovery) {
+    // This will be overridden by diagnostics with the correct URL
+    relayDiscovery = new RelayDiscovery();
+  }
+  return relayDiscovery;
+}
+
+/**
+ * Set the relay discovery instance (used by diagnostics)
+ */
+export function setRelayDiscovery(instance) {
+  relayDiscovery = instance;
+}
 
 /**
  * Quick utility function to get current WebRTC address
  * @returns {Promise<string|null>} Current best WebRTC multiaddr
  */
 export async function getCurrentWebRTCAddr() {
-    return relayDiscovery.getBestWebRTCAddr();
+    return getRelayDiscovery().getBestWebRTCAddr();
 }
 
 /**
@@ -190,5 +231,5 @@ export async function getCurrentWebRTCAddr() {
  * @returns {Promise<Object>} Complete discovery result
  */
 export async function discoverRelay() {
-    return relayDiscovery.discoverWebRTCAddrs();
+    return getRelayDiscovery().discoverWebRTCAddrs();
 }

@@ -1,6 +1,9 @@
-import { createOrbitDB, IPFSAccessController } from '@orbitdb/core'
+import { createOrbitDB } from '@orbitdb/core'
+import { WritePermissionAccessControllerFactory } from '../access-controllers/WritePermissionAccessController.js'
 import { writable } from 'svelte/store'
 import { OrbitDBTopicDiscovery } from '../orbit-discovery.js'
+import { initializeWritePermissionSystem } from '../write-permissions.js'
+import { formatPeerId } from './peer-discovery.js'
 
 /**
  * Database state management
@@ -11,8 +14,17 @@ let todoDB = null
 // Store database event callbacks globally so they persist across function calls
 let databaseUpdateCallbacks = []
 
-// Map to store peerId -> OrbitDB address
+// Map to store peerId -> TODO OrbitDB address (for dropdown)
 const peerOrbitDbAddresses = new Map()
+
+// Map to store peerId -> Write Permission OrbitDB address (for permission requests)
+const peerWritePermissionDbAddresses = new Map()
+
+// Map to store peerId -> TODO OrbitDB database instance (kept open)
+const peerTodoDbInstances = new Map()
+
+// Map to store peerId -> Write Permission OrbitDB database instance (kept open)
+const peerWritePermissionDbInstances = new Map()
 
 // Map to store discovered OrbitDB topics -> discovery info
 const discoveredOrbitDBTopics = new Map()
@@ -34,7 +46,7 @@ export async function initializeOrbitDB(helia) {
     id: 'todo-p2p-app',
     directory: './orbitdb-data',
     AccessControllers: {
-      'ipfs': IPFSAccessController
+      'write-permission': WritePermissionAccessControllerFactory()
     }
   })
   
@@ -42,6 +54,14 @@ export async function initializeOrbitDB(helia) {
   
   // Set up OrbitDB topic discovery
   await setupOrbitDBDiscovery(helia)
+  
+  // Initialize write permission system
+  try {
+    await initializeWritePermissionSystem()
+    console.log('✅ Write permission system initialized')
+  } catch (error) {
+    console.warn('⚠️ Failed to initialize write permission system:', error.message)
+  }
   
   return orbitdb
 }
@@ -51,6 +71,12 @@ export async function initializeOrbitDB(helia) {
  */
 async function setupOrbitDBDiscovery(helia) {
   console.log('🔍 Setting up OrbitDB topic discovery...')
+  
+  // Clear any existing mappings to start fresh
+  peerOrbitDbAddresses.clear()
+  discoveredOrbitDBTopics.clear()
+  console.log('🧹 Cleared existing peer-to-database mappings')
+  
   const discovery = new OrbitDBTopicDiscovery(helia)
   
   // Add debug listener to see if ANY subscription-change events occur
@@ -72,57 +98,175 @@ async function setupOrbitDBDiscovery(helia) {
     }
   })
   
-  await discovery.startDiscovery(async (topic, peerId) => {
-    console.log(`🎯 [DISCOVERY] Automatically subscribing to discovered OrbitDB topic: ${topic} from peer: ${peerId}`)
+  await discovery.startDiscovery(async (topic, announcingPeerId) => {
+    console.log(`🎯 [DISCOVERY] Automatically subscribing to discovered OrbitDB topic: ${topic} from announcing peer: ${announcingPeerId}`)
     try {
-      await helia.libp2p.services.pubsub.subscribe(topic)
-      console.log(`✅ Successfully subscribed to OrbitDB topic: ${topic}`)
       
-      // Store the discovered OrbitDB topic
-      const peerIdStr = peerId.toString()
-      console.log(`📝 [DEBUG] Storing OrbitDB topic discovery:`, {
-        peerIdStr,
+      // Get current state
+      const announcingPeerIdStr = announcingPeerId.toString()
+      const myPeerId = helia.libp2p.peerId.toString()
+      const myDbAddress = todoDB?.address?.toString()
+      
+      console.log(`📝 [DEBUG] Processing OrbitDB topic discovery:`, {
+        announcingPeerIdStr,
+        myPeerId,
         topic,
+        myDbAddress,
+        isMyOwnPeer: announcingPeerIdStr === myPeerId,
+        isMyOwnDb: myDbAddress && topic === myDbAddress,
         peerMapBefore: Array.from(peerOrbitDbAddresses.keys()),
         peerMapSizeBefore: peerOrbitDbAddresses.size
       })
       
-      discoveredOrbitDBTopics.set(topic, {
-        peerId: peerIdStr,
-        topic,
-        discoveredAt: new Date().toISOString()
-      })
+      // Only map if this is from a different peer (not ourselves)
+      // and we can definitively verify it's not our own database
+      const isMyOwnPeer = announcingPeerIdStr === myPeerId
+      const isMyOwnDb = myDbAddress && topic === myDbAddress
       
-      // Also add to the legacy map for UI compatibility
-      peerOrbitDbAddresses.set(peerIdStr, topic)
+      if (!isMyOwnPeer && !isMyOwnDb) {
+        // This is a peer's database - map it
+        const databaseOwnerPeerId = announcingPeerIdStr
+        
+        // Store the discovered OrbitDB topic
+        discoveredOrbitDBTopics.set(topic, {
+          peerId: databaseOwnerPeerId,
+          topic,
+          discoveredAt: new Date().toISOString()
+        })
+        
+        // Determine database type by opening and inspecting the database contents
+        const isWritePermissionDb = await categorizeDatabaseByContent(topic, databaseOwnerPeerId)
+        
+        // Update the reactive store
+        updateDiscoveredDatabasesStore()
+        
+        // Dispatch event for UI updates AFTER mapping is complete
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('orbitdb-database-discovered', {
+              detail: { peerId: announcingPeerIdStr, topic, address: topic, isWritePermissionDb }
+            }))
+        }
+      } else {
+        console.log(`🚫 [SKIPPED] Not mapping - this is our own database or peer:`, {
+          isMyOwnPeer,
+          isMyOwnDb,
+          topic,
+          myDbAddress
+        })
+      }
       
-      console.log(`📝 [DEBUG] After storing discovery:`, {
+      console.log(`📝 [DEBUG] After processing discovery:`, {
         peerMapAfter: Array.from(peerOrbitDbAddresses.keys()),
         peerMapSizeAfter: peerOrbitDbAddresses.size,
-        topicForThisPeer: peerOrbitDbAddresses.get(peerIdStr)
+        finalMapping: Array.from(peerOrbitDbAddresses.entries()).map(([peerId, addr]) => `${formatPeerId(peerId)} -> ${addr.slice(-8)}`)
       })
       
-      // Update the reactive store
-      updateDiscoveredDatabasesStore()
-      
-      // Dispatch event for UI updates
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('orbitdb-database-discovered', {
-          detail: { peerId: peerIdStr, topic, address: topic }
-        }))
-      }
     } catch (error) {
       console.error(`❌ Failed to subscribe to OrbitDB topic ${topic}:`, error)
     }
   })
 
-  // Optionally, handle messages from topics
-  await discovery.enableAutoSubscribe(async (event) => {
-    const { topic, from, data } = event.detail
-    console.log(`📩 [ORBITDB] Received message on topic ${topic} from ${from}:`, new TextDecoder().decode(data))
-  })
+
+}
+
+/**
+ * Categorize a discovered database by temporarily opening it to inspect contents
+ */
+async function categorizeDatabaseByContent(topic, databaseOwnerPeerId) {
+  console.log(`🔍 [CATEGORIZE] Inspecting database content for: ${topic} from peer: ${formatPeerId(databaseOwnerPeerId)}`)
   
-  console.log('✅ OrbitDB topic discovery configured')
+  let tempDbInstance = null
+  let isWritePermissionDb = false
+  
+  try {
+    // Open the database temporarily to inspect its contents
+    tempDbInstance = await orbitdb.open(topic, {
+      type: 'keyvalue'
+    })
+    
+    console.log(`✅ [CATEGORIZE] Opened database temporarily for inspection:`, {
+      address: tempDbInstance.address.toString(),
+      dbName: tempDbInstance.dbName,
+      type: tempDbInstance.type
+    })
+    
+    // Get a sample of the database contents
+    const allData = await tempDbInstance.all()
+    const keys = Object.keys(allData)
+    const sampleSize = Math.min(3, keys.length) // Check up to 3 entries
+    
+    console.log(`🔍 [CATEGORIZE] Database has ${keys.length} entries, sampling ${sampleSize}:`, keys.slice(0, sampleSize))
+    
+    // Check if this looks like a write permission database
+    let permissionRequestCount = 0
+    let todoCount = 0
+    
+    for (let i = 0; i < sampleSize; i++) {
+      const key = keys[i]
+      const entry = allData[key]
+      const value = entry?.value || entry
+      
+      console.log(`🔍 [CATEGORIZE] Entry ${i + 1}:`, { key, value })
+      
+      // Check if this looks like a permission request or write permission database marker
+      if (value && typeof value === 'object') {
+        if (value.requesterPeerId && value.targetPeerID && value.status && value.requestedAt) {
+          permissionRequestCount++
+          console.log(`📝 [CATEGORIZE] Found permission request pattern in entry ${i + 1}`)
+        } else if (value.type === 'write-permission-database' && value.peerId && value.purpose) {
+          permissionRequestCount++
+          console.log(`🔍 [CATEGORIZE] Found write permission database marker in entry ${i + 1}`)
+        } else if (value.text && (value.completed !== undefined || value.assignee !== undefined)) {
+          todoCount++
+          console.log(`📋 [CATEGORIZE] Found TODO pattern in entry ${i + 1}`)
+        }
+      }
+    }
+    
+    // Determine database type based on content patterns (store addresses only)
+    if (permissionRequestCount > 0 && todoCount === 0) {
+      isWritePermissionDb = true
+      peerWritePermissionDbAddresses.set(databaseOwnerPeerId, topic)
+      console.log(`✅ [CATEGORIZE] Classified as WRITE PERMISSION database for peer ${formatPeerId(databaseOwnerPeerId)}`)
+    } else if (todoCount > 0 && permissionRequestCount === 0) {
+      isWritePermissionDb = false
+      peerOrbitDbAddresses.set(databaseOwnerPeerId, topic)
+      console.log(`✅ [CATEGORIZE] Classified as TODO database for peer ${formatPeerId(databaseOwnerPeerId)}`)
+    } else if (keys.length === 0) {
+      // Empty database - try to determine type from database name if available
+      const dbName = tempDbInstance.dbName || ''
+      if (dbName.includes('write-permission') || dbName.includes('write_permission')) {
+        isWritePermissionDb = true
+        peerWritePermissionDbAddresses.set(databaseOwnerPeerId, topic)
+        console.log(`✅ [CATEGORIZE] Empty database classified as WRITE PERMISSION based on name: ${dbName}`)
+      } else {
+        // Default to TODO database for empty databases with no clear name indication
+        isWritePermissionDb = false
+        peerOrbitDbAddresses.set(databaseOwnerPeerId, topic)
+        console.log(`✅ [CATEGORIZE] Empty database classified as TODO (default) for peer ${formatPeerId(databaseOwnerPeerId)}`)
+      }
+    } else {
+      // Mixed or unclear content - default to TODO database
+      isWritePermissionDb = false
+      peerOrbitDbAddresses.set(databaseOwnerPeerId, topic)
+      console.log(`⚠️ [CATEGORIZE] Unclear database content (${permissionRequestCount} permission, ${todoCount} todo), defaulting to TODO for peer ${formatPeerId(databaseOwnerPeerId)}`)
+    }
+    
+  } catch (error) {
+    console.error(`❌ [CATEGORIZE] Failed to inspect database content for ${topic}:`, error)
+    // On error, default to TODO database
+    isWritePermissionDb = false
+    peerOrbitDbAddresses.set(databaseOwnerPeerId, topic)
+    console.log(`⚠️ [CATEGORIZE] Error occurred, defaulting to TODO database for peer ${formatPeerId(databaseOwnerPeerId)}`)
+  } finally {
+    // Don't close databases during categorization to prevent race conditions
+    // Let OrbitDB handle database lifecycle management
+    if (tempDbInstance) {
+      console.log(`📦 [CATEGORIZE] Leaving database instance open for replication: ${topic}`)
+    }
+  }
+  
+  return isWritePermissionDb
 }
 
 /**
@@ -137,7 +281,102 @@ function updateDiscoveredDatabasesStore() {
  * Get the map of peer OrbitDB addresses for UI consumption
  */
 export function getPeerOrbitDbAddresses() {
+  console.log('🔍 [DEBUG] getPeerOrbitDbAddresses called:', {
+    todoDbCount: peerOrbitDbAddresses.size,
+    todoDbMapping: Array.from(peerOrbitDbAddresses.entries()),
+    permissionDbCount: peerWritePermissionDbAddresses.size,
+    permissionDbMapping: Array.from(peerWritePermissionDbAddresses.entries())
+  })
   return new Map(peerOrbitDbAddresses)
+}
+
+/**
+ * Get the map of peer write permission OrbitDB addresses
+ */
+export function getPeerWritePermissionDbAddresses() {
+  return new Map(peerWritePermissionDbAddresses)
+}
+
+/**
+ * Get the map of peer TODO database instances
+ */
+export function getPeerTodoDbInstances() {
+  return new Map(peerTodoDbInstances)
+}
+
+/**
+ * Get the map of peer write permission database instances
+ */
+export function getPeerWritePermissionDbInstances() {
+  return new Map(peerWritePermissionDbInstances)
+}
+
+/**
+ * Get a specific peer's TODO database instance
+ */
+export function getPeerTodoDbInstance(peerId) {
+  return peerTodoDbInstances.get(peerId)
+}
+
+/**
+ * Get a specific peer's write permission database instance
+ */
+export function getPeerWritePermissionDbInstance(peerId) {
+  return peerWritePermissionDbInstances.get(peerId)
+}
+
+/**
+ * Get or open a peer's write permission database instance (lazy loading)
+ */
+export async function getOrOpenPeerWritePermissionDb(peerId) {
+  if (!orbitdb) {
+    throw new Error('OrbitDB not initialized')
+  }
+  
+  // Check if we already have an open instance
+  const existingInstance = peerWritePermissionDbInstances.get(peerId)
+  if (existingInstance) {
+    console.log(`⚙️ Reusing existing write permission database instance for peer ${formatPeerId(peerId)}`)
+    return existingInstance
+  }
+  
+  // Check if we have the address for this peer's write permission database
+  const address = peerWritePermissionDbAddresses.get(peerId)
+  if (!address) {
+    console.error(`❌ [DEBUG] No write permission database found for peer ${formatPeerId(peerId)}:`, {
+      peerId,
+      availableWritePermissionPeers: Array.from(peerWritePermissionDbAddresses.keys()),
+      availableTodoPeers: Array.from(peerOrbitDbAddresses.keys()),
+      writePermissionDbMapping: Array.from(peerWritePermissionDbAddresses.entries()),
+      todoDbMapping: Array.from(peerOrbitDbAddresses.entries())
+    })
+    throw new Error(`No write permission database address found for peer ${formatPeerId(peerId)}. Available write permission databases: ${Array.from(peerWritePermissionDbAddresses.keys()).map(formatPeerId).join(', ')}`)
+  }
+  
+  try {
+    console.log(`🔓 Opening write permission database for peer ${formatPeerId(peerId)} with address: ${address}`)
+    
+    // Open the write permission database
+    const dbInstance = await orbitdb.open(address, {
+      type: 'keyvalue'
+    })
+    
+    console.log(`✅ Successfully opened write permission database:`, {
+      address: dbInstance.address.toString(),
+      name: dbInstance.dbName,
+      type: dbInstance.type
+    })
+    
+    // Cache the instance for future use
+    peerWritePermissionDbInstances.set(peerId, dbInstance)
+    console.log(`📦 Cached write permission database instance for peer ${formatPeerId(peerId)}`)
+    
+    return dbInstance
+    
+  } catch (error) {
+    console.error(`❌ Failed to open write permission database for peer ${formatPeerId(peerId)}:`, error)
+    throw error
+  }
 }
 
 /**
@@ -158,7 +397,7 @@ export function getCurrentDatabaseInfo() {
 }
 
 /**
- * Open a selected peer's OrbitDB database
+ * Open a selected peer's OrbitDB database (with lazy loading and caching)
  */
 export async function openTodoDatabaseForPeer(peerId, helia) {
   if (!orbitdb) {
@@ -180,6 +419,15 @@ export async function openTodoDatabaseForPeer(peerId, helia) {
   
   let address
   if (peerId && peerOrbitDbAddresses.has(peerId)) {
+    // Check if we already have an open instance for this peer
+    const existingInstance = peerTodoDbInstances.get(peerId)
+    if (existingInstance) {
+      console.log(`⚙️ Reusing existing TODO database instance for peer ${formatPeerId(peerId)}`)
+      todoDB = existingInstance
+      setupDatabaseEventListeners()
+      return todoDB
+    }
+    
     // Use the discovered OrbitDB address for this peer
     address = peerOrbitDbAddresses.get(peerId)
     console.log(`📍 Opening peer's database with address: ${address}`)
@@ -190,7 +438,7 @@ export async function openTodoDatabaseForPeer(peerId, helia) {
   }
   
   try {
-    // Use a consistent approach for all databases
+    // Open the database
     todoDB = await orbitdb.open(address, {
       type: 'keyvalue'
       // Don't specify access control when opening existing databases
@@ -201,6 +449,12 @@ export async function openTodoDatabaseForPeer(peerId, helia) {
       name: todoDB.dbName,
       type: todoDB.type
     })
+    
+    // Cache the instance for future use (only for peer databases)
+    if (peerId && peerOrbitDbAddresses.has(peerId)) {
+      peerTodoDbInstances.set(peerId, todoDB)
+      console.log(`📦 Cached TODO database instance for peer ${formatPeerId(peerId)}`)
+    }
     
     // Set up event listeners for the new database
     setupDatabaseEventListeners()
@@ -222,42 +476,43 @@ export async function getTodoDatabase(helia) {
   }
   
   if (!todoDB) {
-    console.log('🔓 Opening/creating OrbitDB with IPFSAccessController...')
+    console.log('🔓 Opening/creating OrbitDB with WritePermissionAccessController...')
     
     try {
-      // Use IPFSAccessController with wildcard for open write access
+      // Use WritePermissionAccessController with our peerId as owner
       todoDB = await orbitdb.open('todos', {
         type: 'keyvalue',
-        AccessController: IPFSAccessController({
-          write: ['*'] // Allow any peer to write
-        })
+        AccessController: {
+          type: 'write-permission',
+          ownerPeerId: helia.libp2p.peerId.toString()
+        }
       })
       
-      console.log('✅ Database opened successfully with IPFSAccessController:', {
+      console.log('✅ Database opened successfully with WritePermissionAccessController:', {
         address: todoDB.address,
         type: todoDB.type,
         accessController: todoDB.access
       })
       
     } catch (error) {
-      console.warn('⚠️ Failed to open with IPFSAccessController, trying legacy approach:', error.message)
+      console.warn('⚠️ Failed to open with WritePermissionAccessController, trying fallback:', error.message)
       
       try {
-        // Fallback 1: Try with accessController object syntax
+        // Fallback: Use IPFS access controller with wildcard
         todoDB = await orbitdb.open('todos', {
           type: 'keyvalue',
-          accessController: {
+          AccessController: {
             type: 'ipfs',
-            write: ['*']
+            write: ['*'] // Allow anyone to write
           }
         })
         
-        console.log('✅ Database opened with legacy accessController syntax')
+        console.log('✅ Database opened with IPFS AccessController fallback')
         
       } catch (error2) {
-        console.warn('⚠️ Legacy syntax failed, trying no access controller:', error2.message)
+        console.warn('⚠️ IPFS AccessController failed, using default:', error2.message)
         
-        // Fallback 2: No access controller (defaults to public)
+        // Final fallback: No access controller (defaults to public)
         todoDB = await orbitdb.open('todos', {
           type: 'keyvalue'
         })
@@ -362,22 +617,51 @@ export async function stopOrbitDB() {
   console.log('🛑 Stopping OrbitDB...')
   
   try {
+    // Close the current todo database
     if (todoDB) {
       await todoDB.close()
       todoDB = null
+      console.log('🔒 Closed current todo database')
     }
     
+    // Close all peer TODO database instances
+    console.log(`🔒 Closing ${peerTodoDbInstances.size} peer TODO database instances...`)
+    for (const [peerId, dbInstance] of peerTodoDbInstances) {
+      try {
+        await dbInstance.close()
+        console.log(`🔒 Closed TODO database instance for peer ${formatPeerId(peerId)}`)
+      } catch (error) {
+        console.warn(`⚠️ Failed to close TODO database instance for peer ${formatPeerId(peerId)}:`, error)
+      }
+    }
+    
+    // Close all peer write permission database instances
+    console.log(`🔒 Closing ${peerWritePermissionDbInstances.size} peer write permission database instances...`)
+    for (const [peerId, dbInstance] of peerWritePermissionDbInstances) {
+      try {
+        await dbInstance.close()
+        console.log(`🔒 Closed write permission database instance for peer ${formatPeerId(peerId)}`)
+      } catch (error) {
+        console.warn(`⚠️ Failed to close write permission database instance for peer ${formatPeerId(peerId)}:`, error)
+      }
+    }
+    
+    // Stop OrbitDB instance
     if (orbitdb) {
       await orbitdb.stop()
       orbitdb = null
+      console.log('🔒 Stopped OrbitDB instance')
     }
     
     // Clear callbacks and maps
     databaseUpdateCallbacks.length = 0
     peerOrbitDbAddresses.clear()
+    peerWritePermissionDbAddresses.clear()
+    peerTodoDbInstances.clear()
+    peerWritePermissionDbInstances.clear()
     discoveredOrbitDBTopics.clear()
     
-    console.log('✅ OrbitDB stopped')
+    console.log('✅ OrbitDB stopped and all database instances closed')
   } catch (error) {
     console.error('❌ Error stopping OrbitDB:', error)
     throw error

@@ -29,6 +29,22 @@ const RELAY_BOOTSTRAP_ADDR = '/dns4/91-99-67-170.k51qzi5uqu5dl6dk0zoaocksijnghdr
 // Extract bootstrap peer ID for debugging
 const BOOTSTRAP_PEER_ID = RELAY_BOOTSTRAP_ADDR.split('/').pop()
 
+// Determine which bootstrap address to use (for now hardcoded to prod, but can be made configurable)
+const CURRENT_BOOTSTRAP_ADDR = RELAY_BOOTSTRAP_ADDR  // Change this to RELAY_BOOTSTRAP_ADDR_DEV for development
+
+/**
+ * Get current bootstrap configuration
+ */
+export function getBootstrapConfig() {
+  return {
+    currentBootstrapAddr: CURRENT_BOOTSTRAP_ADDR,
+    devBootstrapAddr: RELAY_BOOTSTRAP_ADDR_DEV,
+    prodBootstrapAddr: RELAY_BOOTSTRAP_ADDR,
+    isLocalhost: CURRENT_BOOTSTRAP_ADDR.includes('127.0.0.1'),
+    isDevelopment: CURRENT_BOOTSTRAP_ADDR.includes('127.0.0.1')
+  }
+}
+
 /**
  * Network state management
  */
@@ -98,7 +114,7 @@ async function createLibP2PNode() {
     ],
     services: {
       identify: identify(),
-      bootstrap: bootstrap({list: [RELAY_BOOTSTRAP_ADDR]}),
+      bootstrap: bootstrap({list: [CURRENT_BOOTSTRAP_ADDR]}),
       ping: ping(),
       dcutr: dcutr(),
       autonat: autoNAT(),
@@ -169,9 +185,9 @@ async function initializeP2PWithTimeout() {
       pubsubService.addEventListener('message', (event) => {
         const { topic, data, from } = event.detail
         if (topic === discoveryTopic) {
-          console.log('📢 Received peer discovery message on topic:', topic, 'from:', from.toString())
-          const messageText = new TextDecoder().decode(data)
-          console.log('📢 Message data:', messageText)
+          // console.log('📢 Received peer discovery message on topic:', topic, 'from:', from.toString())
+          // const messageText = new TextDecoder().decode(data)
+          // console.log('📢 Message data:', messageText)
           
           // Manually dial the peer if we're not already connected
           const fromPeerIdStr = from.toString()

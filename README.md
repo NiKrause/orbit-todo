@@ -8,9 +8,16 @@ A local-first, peer-to-peer Todo application built with Svelte, Helia (IPFS), an
 todo-p2p/
 ├── 📱 src/                     # Main application source
 │   ├── lib/                    # Core P2P and OrbitDB logic
-│   │   ├── orbitdb.js         # OrbitDB database management
-│   │   ├── p2p.js             # Main P2P networking
-│   │   ├── p2p-core.js        # Core P2P utilities
+│   │   ├── access-controllers/ # Custom OrbitDB access controllers
+│   │   │   └── WritePermissionAccessController.js  # Time-based write permissions
+│   │   ├── p2p/               # Refactored P2P modules
+│   │   │   ├── network.js     # LibP2P and Helia network layer
+│   │   │   ├── database.js    # OrbitDB database management
+│   │   │   ├── todos.js       # Todo CRUD operations
+│   │   │   ├── peer-discovery.js  # Peer discovery and connection
+│   │   │   └── diagnostics.js # Health checks and diagnostics
+│   │   ├── p2p.js             # Main P2P networking (legacy)
+│   │   ├── write-permissions.js # Write permission request system
 │   │   └── orbit-discovery.js  # Peer discovery logic
 │   ├── routes/                # SvelteKit routes
 │   ├── utils/                 # Utility functions
@@ -41,7 +48,11 @@ todo-p2p/
 │   ├── playwright.config.js  # E2E test configuration
 │   └── eslint.config.js      # Code linting rules
 └── 📖 Documentation
-    └── README.md             # This file
+    ├── README.md             # This file
+    ├── WRITE_PERMISSIONS.md  # Write permission system documentation
+    ├── AI_ASSISTANT_PROMPT.md # AI assistant configuration
+    ├── STORAGE_PATTERN.md    # Storage architecture documentation
+    └── VERSION_MANAGEMENT.md # Version management documentation
 ```
 
 ### Key Components:
@@ -52,6 +63,31 @@ todo-p2p/
 - **🔍 Discovery**: Peer discovery via libp2p bootstrap and pubsub
 - **🧪 Testing**: Comprehensive test suite for P2P functionality
 - **🚀 Relay Server**: Optional relay server for peer connectivity
+
+## Write Permission System
+
+The newly implemented write permission system includes the following features:
+
+### Key Features
+
+- **Custom Access Controller**: Uses `WritePermissionAccessController` to allow only the database owner to write by default. Temporary write access is granted based on permission requests, which last for 48 hours. Expired permissions are cleaned automatically.
+
+- **Global Write Permission Requests**: Allows any peer to request write access to a peer's database. Requests are stored in a globally accessible OrbitDB.
+
+- **Incoming/Outgoing Permission Management**: Peers are notified of incoming write permission requests and can grant or deny them. Request statuses are tracked and displayed for both incoming and outgoing requests.
+
+### How It Works
+
+1. **Ownership**: Each peer owns their database, set up to allow only them to write.
+2. **Permission Requests**: Write permissions are requested via a global request database when switching to another peer's database.
+3. **Permission Expiry**: All granted permissions expire after 48 hours and are cleaned up automatically.
+4. **UI Integration**: The interface provides sections for managing incoming and outgoing requests and showing current write permissions.
+
+### Usage Flow
+
+- **Database Creation**: Each peer creates their database, owned only by them.
+- **Permission Request**: When peers switch to another peer's database, they can request write permissions.
+- **Grant/Deny Requests**: Database owners see incoming requests and choose to grant or deny them.
 
 ## Developing
 

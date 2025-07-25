@@ -70,41 +70,7 @@ export class OrbitDBTopicDiscovery {
              /^\/.*\/.*\/.*$/.test(topic) // Generic pattern for OrbitDB-like addresses
     }
   
-    /**
-     * Auto-subscribe to discovered OrbitDB topics
-     * @param {function} messageHandler - Handler for messages from discovered topics
-     */
-    async enableAutoSubscribe(messageHandler) {
-      this.messageHandler = messageHandler
-      
-      // Subscribe to already discovered topics
-      for (const topic of this.discoveredTopics) {
-        await this.subscribeToTopic(topic)
-      }
-      
-      // Set up auto-subscription for future discoveries
-      this.autoSubscribe = true
-    }
-  
-    /**
-     * Subscribe to a specific topic
-     * @private
-     */
-    async subscribeToTopic(topic) {
-      try {
-        await this.ipfs.libp2p.services.pubsub.subscribe(topic)
-        this.autoSubscriptions.set(topic, true)
-        console.log(`Auto-subscribed to OrbitDB topic: ${topic}`)
-        
-        // Add message listener if we have a handler
-        if (this.messageHandler && !this.hasMessageListener) {
-          this.ipfs.libp2p.services.pubsub.addEventListener('message', this.messageHandler)
-          this.hasMessageListener = true
-        }
-      } catch (error) {
-        console.error(`Failed to subscribe to ${topic}:`, error)
-      }
-    }
+
   
     /**
      * Get all discovered OrbitDB topics
@@ -132,44 +98,6 @@ export class OrbitDBTopicDiscovery {
   }
   
   /**
-   * Enhanced discovery with pattern matching
-   */
-  export class AdvancedOrbitDBDiscovery extends OrbitDBTopicDiscovery {
-    constructor(ipfs, patterns = []) {
-      super(ipfs)
-      this.customPatterns = patterns
-    }
-  
-    /**
-     * Add custom patterns for OrbitDB detection
-     */
-    addPattern(pattern) {
-      this.customPatterns.push(pattern)
-    }
-  
-    /**
-     * Enhanced OrbitDB topic detection
-     * @private
-     */
-    isOrbitDBTopic(topic) {
-      // Standard OrbitDB patterns
-      if (super.isOrbitDBTopic(topic)) {
-        return true
-      }
-      
-      // Check custom patterns
-      return this.customPatterns.some(pattern => {
-        if (typeof pattern === 'string') {
-          return topic.includes(pattern)
-        } else if (pattern instanceof RegExp) {
-          return pattern.test(topic)
-        }
-        return false
-      })
-    }
-  }
-  
-  /**
    * Usage example
    */
   export async function setupOrbitDBDiscovery(ipfs) {
@@ -180,52 +108,7 @@ export class OrbitDBTopicDiscovery {
       console.log(`New OrbitDB database discovered: ${topic}`)
       console.log(`Discovered by peer: ${peerId}`)
       
-      // Optionally auto-subscribe to interesting topics
-      if (topic.includes('todo') || topic.includes('chat')) {
-        try {
-          await ipfs.libp2p.services.pubsub.subscribe(topic)
-          console.log(`Auto-subscribed to interesting topic: ${topic}`)
-        } catch (error) {
-          console.error(`Failed to subscribe to ${topic}:`, error)
-        }
-      }
     })
     
     return discovery
   }
-  
-  /**
-   * Monitor all OrbitDB activity
-   */
-  export async function monitorAllOrbitDBActivity(ipfs) {
-    const discovery = new OrbitDBTopicDiscovery(ipfs)
-    
-    // Auto-subscribe to all discovered OrbitDB topics
-    await discovery.enableAutoSubscribe(async (event) => {
-      const { topic, data, from } = event.detail
-      
-      try {
-        // Try to decode as OrbitDB entry
-        const { Entry } = await import('@orbitdb/core')
-        const entry = await Entry.decode(data)
-        
-        console.log(`OrbitDB Activity on ${topic}:`, {
-          payload: entry.payload,
-          hash: entry.hash,
-          from: String(from),
-          timestamp: new Date()
-        })
-      } catch (error) {
-        // Not an OrbitDB entry or decode failed
-        console.log(`Non-OrbitDB message on ${topic}:`, data.length, 'bytes')
-      }
-    })
-    
-    await discovery.startDiscovery(async (topic, peerId) => {
-      console.log(`Discovered and auto-subscribing to: ${topic}`)
-      await discovery.subscribeToTopic(topic)
-    })
-    
-    return discovery
-  }
-  
