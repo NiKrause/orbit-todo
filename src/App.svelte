@@ -27,6 +27,17 @@
   import { discoverRelay } from './utils/relay-discovery.js'
   import { getHelia } from './lib/p2p/network.js'
 
+  // Import components
+  import Toast from './components/Toast.svelte'
+  import LoadingState from './components/LoadingState.svelte'
+  import DatabaseSelector from './components/DatabaseSelector.svelte'
+  import TodoForm from './components/TodoForm.svelte'
+  import TodoList from './components/TodoList.svelte'
+  import PeerStatus from './components/PeerStatus.svelte'
+  import WritePermissions from './components/WritePermissions.svelte'
+  import DatabaseManager from './components/DatabaseManager.svelte'
+  import RelayStatus from './components/RelayStatus.svelte'
+
   let todos = []
   let inputText = ''
   let assigneeText = ''
