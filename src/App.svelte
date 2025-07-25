@@ -37,6 +37,9 @@ import {
   import { ToastService } from './services/ToastService.js'
   import { EventManager } from './services/EventManager.js'
   import { DatabaseSwitcher } from './services/DatabaseSwitcher.js'
+  import { DatabaseManager as DatabaseManagerService } from './services/DatabaseManager.js'
+  import { IPFSAnalyzer as IPFSAnalyzerService } from './services/IPFSAnalyzer.js'
+  import { WritePermissionManager } from './services/WritePermissionManager.js'
 
   // Import components
   import Toast from './components/Toast.svelte'
@@ -84,12 +87,26 @@ import {
   let toastService;
   let eventManager;
   let databaseSwitcher;
+  let databaseManagerService;
+  let ipfsAnalyzerService;
+  let writePermissionManager;
 
   onMount(async () => {
     // Initialize services
     toastService = new ToastService((message) => {
       toastMessage = message;
     });
+    
+    // Initialize other services
+    databaseManagerService = new DatabaseManagerService(toastService, formatBytes);
+    ipfsAnalyzerService = new IPFSAnalyzerService(toastService, formatBytes, formatPeerId);
+    writePermissionManager = new WritePermissionManager(toastService);
+    
+    // Initialize EventManager to handle P2P events
+    eventManager = new EventManager(toastService, formatPeerId);
+    
+    // Initialize DatabaseSwitcher for database operations
+    databaseSwitcher = new DatabaseSwitcher(toastService, formatPeerId);
     
     function updatePeerTransports(peerId, newTransport) {
       const peer = peers.find(p => p.peerId === peerId);
@@ -312,114 +329,42 @@ function handlePeerConnected(e) {
   }
 
   async function handlePeerDbSwitch() {
+    const wasLoading = loading;
+    loading = true;
+    
     try {
-      console.log('🔄 Starting database switch to:', selectedPeerId || 'default');
+      // Use DatabaseSwitcher service to handle the complex switching logic
+      const switchResult = await databaseSwitcher.switchToDatabase(selectedPeerId, {
+        getHelia,
+        openTodoDatabaseForPeer,
+        getTodoDbAddress,
+        getTodoDbName,
+        getAllTodos,
+        getConnectedPeers,
+        getPeerOrbitDbAddresses,
+        onDatabaseUpdate,
+        hasWritePermission,
+        requestWritePermission,
+        updateWritePermissionRequests
+      });
       
-      // Show loading state during switch
-      const wasLoading = loading;
-      loading = true;
+      // Update component state with results
+      todos = switchResult.todos;
+      dbAddress = switchResult.dbAddress;
+      dbName = switchResult.dbName;
+      peers = switchResult.peers;
+      peerOrbitDbAddresses = switchResult.peerOrbitDbAddresses;
       
-      try {
-        // Step 1: Switch to the new database
-        console.log('📍 Opening database for peer:', selectedPeerId);
-        const helia = getHelia();
-        if (!helia) {
-          throw new Error('Helia instance not available');
-        }
-        await openTodoDatabaseForPeer(selectedPeerId, helia);
-        
-        // Step 2: Wait a moment for database to initialize
-        console.log('⏳ Waiting for database to initialize...');
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // Step 3: Update database info
-        dbAddress = getTodoDbAddress();
-        dbName = getTodoDbName();
-        console.log('📊 Database info updated:', { address: dbAddress, name: dbName });
-        
-        // Step 4: Fetch todos from the new database
-        console.log('📋 Fetching todos from new database...');
-        const newTodos = await getAllTodos();
-        todos = newTodos;
-        console.log('✅ Loaded', newTodos.length, 'todos from new database');
-        
-        // Step 5: Update other state
-        peers = getConnectedPeers();
-        peerOrbitDbAddresses = getPeerOrbitDbAddresses();
-        
-        // Step 6: Re-setup database event listeners for reactive updates
-        console.log('🔄 Re-setting up database event listeners...');
-        if (cleanupDatabaseListener) {
-          cleanupDatabaseListener();
-        }
-        cleanupDatabaseListener = onDatabaseUpdate((eventType, eventData) => {
-          console.log('📝 Database update received:', eventType, eventData);
-          // Refresh todos when database updates
-          getAllTodos().then(refreshedTodos => {
-            todos = refreshedTodos;
-            console.log('🔄 Todos refreshed after database update:', refreshedTodos.length);
-          }).catch(err => {
-            console.error('Error refreshing todos after database update:', err);
-          });
-        });
-        
-        // Check if we need to request write permission
-        console.log('🔍 [DEBUG] Checking write permissions:', {
-          selectedPeerId,
-          dbAddress,
-          hasSelectedPeer: !!selectedPeerId,
-          hasPeerDbAddress: peerOrbitDbAddresses.has(selectedPeerId)
-        });
-        
-        const canWrite = await hasWritePermission(dbAddress, selectedPeerId);
-        console.log('🔍 [DEBUG] Write permission check result:', {
-          canWrite,
-          dbAddress,
-          selectedPeerId
-        });
-        
-        if (selectedPeerId && !canWrite) {
-          // Automatically request write permission when switching to a peer's database
-          console.log('🔐 No write permission detected, requesting permission...');
-          console.log('🔍 [DEBUG] Requesting write permission with params:', {
-            dbAddress,
-            selectedPeerId,
-            peerDbAddress: peerOrbitDbAddresses.get(selectedPeerId)
-          });
-          
-          try {
-            const reason = 'Requesting write access to collaborate on TODOs';
-            const permissionRequest = await requestWritePermission(dbAddress, selectedPeerId, reason);
-            console.log('✅ [DEBUG] Write permission request created:', permissionRequest);
-            showToast(`📝 Write permission requested from ${formatPeerId(selectedPeerId)}`);
-            
-            // Force update the write permission requests UI immediately
-            await updateWritePermissionRequests();
-          } catch (err) {
-            console.error('❌ Failed to auto-request write permission:', err);
-            showToast('❌ Failed to request write permission');
-          }
-        } else if (selectedPeerId && canWrite) {
-          console.log('✅ Already have write permission for this database');
-        } else if (!selectedPeerId) {
-          console.log('🏠 Switched to own database - no permission request needed');
-        }
-        
-        showToast(selectedPeerId ? 
-          `Switched to ${formatPeerId(selectedPeerId)}'s DB (${newTodos.length} todos)` : 
-          `Switched to default DB (${newTodos.length} todos)`);
-        
-        console.log('✅ Database switch completed successfully');
-        
-      } finally {
-        // Always restore loading state
-        loading = wasLoading;
+      // Update write permission requests if needed
+      if (switchResult.writePermissionRequested) {
+        await updateWritePermissionRequests();
       }
       
     } catch (err) {
       console.error('❌ Database switch failed:', err);
       error = err.message;
-      loading = false
+    } finally {
+      loading = wasLoading;
     }
   }
   
@@ -449,7 +394,7 @@ function handlePeerConnected(e) {
   
   async function handleRequestWritePermission(targetPeerId) {
     if (!targetPeerId || !peerOrbitDbAddresses.has(targetPeerId)) {
-      showToast('Cannot request permission: peer database not found');
+toastService.show('Cannot request permission: peer database not found');
       return;
     }
     
@@ -458,35 +403,35 @@ function handlePeerConnected(e) {
       const reason = `Requesting write access to collaborate on TODOs`;
       
       await requestWritePermission(targetDbAddress, targetPeerId, reason);
-      showToast(`Write permission request sent to ${formatPeerId(targetPeerId)}`);
+toastService.show(`Write permission request sent to ${formatPeerId(targetPeerId)}`);
       
       // Update UI
       await updateWritePermissionRequests();
     } catch (err) {
       console.error('Failed to request write permission:', err);
-      showToast('Failed to send write permission request');
+toastService.show('Failed to send write permission request');
     }
   }
   
   async function handleGrantWritePermission(requestId) {
     try {
       await grantWritePermission(requestId);
-      showToast('Write permission granted!');
+toastService.show('Write permission granted!');
       await updateWritePermissionRequests();
     } catch (err) {
       console.error('Failed to grant write permission:', err);
-      showToast('Failed to grant write permission');
+toastService.show('Failed to grant write permission');
     }
   }
   
   async function handleDenyWritePermission(requestId, reason = '') {
     try {
       await denyWritePermission(requestId, reason);
-      showToast('Write permission denied');
+toastService.show('Write permission denied');
       await updateWritePermissionRequests();
     } catch (err) {
       console.error('Failed to deny write permission:', err);
-      showToast('Failed to deny write permission');
+toastService.show('Failed to deny write permission');
     }
   }
   
@@ -497,7 +442,7 @@ function handlePeerConnected(e) {
       
       if (!indexedDB.databases) {
         console.warn('indexedDB.databases() not supported in this browser');
-        showToast('Database enumeration not supported in this browser');
+toastService.show('Database enumeration not supported in this browser');
         return;
       }
       
@@ -915,10 +860,10 @@ function handlePeerConnected(e) {
         storageUsage
       });
       
-      showToast(`Found ${browserDatabases.length} P2P database(s) (${activeCount} active) - ${formatBytes(totalEstimatedSize)}`);
+toastService.show(`Found ${browserDatabases.length} P2P database(s) (${activeCount} active) - ${formatBytes(totalEstimatedSize)}`);
     } catch (error) {
       console.error('❌ Error refreshing databases:', error);
-      showToast('Failed to refresh databases');
+toastService.show('Failed to refresh databases');
     }
   }
   
@@ -931,7 +876,7 @@ function handlePeerConnected(e) {
       }
       
       console.log('👀 Viewing database contents:', dbName);
-      showToast('Loading database contents...');
+toastService.show('Loading database contents...');
       
       const request = indexedDB.open(dbName);
       
@@ -970,10 +915,10 @@ function handlePeerConnected(e) {
           viewingDatabase = dbName;
           databaseContents = { ...databaseContents }; // Trigger reactivity
           
-          showToast(`Loaded contents for ${dbName}`);
+toastService.show(`Loaded contents for ${dbName}`);
         } catch (error) {
           console.error('Error reading store contents:', error);
-          showToast('Failed to read database contents');
+toastService.show('Failed to read database contents');
         } finally {
           db.close();
         }
@@ -981,12 +926,12 @@ function handlePeerConnected(e) {
       
       request.onerror = () => {
         console.error('Error opening database:', request.error);
-        showToast('Failed to open database');
+toastService.show('Failed to open database');
       };
       
     } catch (error) {
       console.error('❌ Error viewing database contents:', error);
-      showToast('Failed to view database contents');
+toastService.show('Failed to view database contents');
     }
   }
   
@@ -1002,7 +947,7 @@ function handlePeerConnected(e) {
       
       deleteRequest.onsuccess = () => {
         console.log('✅ Database deleted:', dbName);
-        showToast(`Database "${dbName}" deleted`);
+toastService.show(`Database "${dbName}" deleted`);
         
         // Find the deleted database to get its size
         const deletedDb = browserDatabases.find(db => db.name === dbName);
@@ -1054,17 +999,17 @@ function handlePeerConnected(e) {
       
       deleteRequest.onerror = () => {
         console.error('❌ Error deleting database:', deleteRequest.error);
-        showToast(`Failed to delete database "${dbName}"`);
+toastService.show(`Failed to delete database "${dbName}"`);
       };
       
       deleteRequest.onblocked = () => {
         console.warn('⚠️ Database deletion blocked - close all tabs and try again');
-        showToast('Database deletion blocked - close other tabs and try again');
+toastService.show('Database deletion blocked - close other tabs and try again');
       };
       
     } catch (error) {
       console.error('❌ Error deleting database:', error);
-      showToast('Failed to delete database');
+toastService.show('Failed to delete database');
     }
   }
   
@@ -1072,7 +1017,7 @@ function handlePeerConnected(e) {
     const inactiveDatabases = browserDatabases.filter(db => !db.isActive);
     
     if (inactiveDatabases.length === 0) {
-      showToast('No inactive databases to delete');
+toastService.show('No inactive databases to delete');
       return;
     }
     
@@ -1082,7 +1027,7 @@ function handlePeerConnected(e) {
     
     try {
       console.log('🗑️ Deleting inactive databases:', inactiveDatabases.length);
-      showToast('Deleting inactive databases...');
+toastService.show('Deleting inactive databases...');
       
       let deletedCount = 0;
       let failedCount = 0;
@@ -1127,16 +1072,16 @@ function handlePeerConnected(e) {
       }
       
       if (failedCount === 0) {
-        showToast(`✅ Successfully deleted ${deletedCount} inactive databases`);
+toastService.show(`✅ Successfully deleted ${deletedCount} inactive databases`);
       } else {
-        showToast(`⚠️ Deleted ${deletedCount} inactive databases, failed to delete ${failedCount}`);
+toastService.show(`⚠️ Deleted ${deletedCount} inactive databases, failed to delete ${failedCount}`);
       }
       
       console.log(`🧹 Inactive database cleanup complete: ${deletedCount} deleted, ${failedCount} failed`);
       
     } catch (error) {
       console.error('❌ Error during inactive database deletion:', error);
-      showToast('Failed to delete inactive databases');
+toastService.show('Failed to delete inactive databases');
     }
   }
   
@@ -1152,7 +1097,7 @@ function handlePeerConnected(e) {
     
     try {
       console.log('🗑️ Deleting all databases:', browserDatabases.length);
-      showToast('Deleting all databases...');
+toastService.show('Deleting all databases...');
       
       let deletedCount = 0;
       let failedCount = 0;
@@ -1192,16 +1137,16 @@ function handlePeerConnected(e) {
       databaseContents = {};
       
       if (failedCount === 0) {
-        showToast(`✅ Successfully deleted all ${deletedCount} databases`);
+toastService.show(`✅ Successfully deleted all ${deletedCount} databases`);
       } else {
-        showToast(`⚠️ Deleted ${deletedCount} databases, failed to delete ${failedCount}`);
+toastService.show(`⚠️ Deleted ${deletedCount} databases, failed to delete ${failedCount}`);
       }
       
       console.log(`🧹 Database cleanup complete: ${deletedCount} deleted, ${failedCount} failed`);
       
     } catch (error) {
       console.error('❌ Error during bulk database deletion:', error);
-      showToast('Failed to delete all databases');
+toastService.show('Failed to delete all databases');
     }
   }
   
@@ -1217,7 +1162,7 @@ function handlePeerConnected(e) {
   async function analyzeIPFS() {
     try {
       console.log('🔍 Starting IPFS analysis...');
-      showToast('Analyzing IPFS node...');
+toastService.show('Analyzing IPFS node...');
       
       const { getHelia } = await import('./lib/p2p/network.js');
       const helia = getHelia();
@@ -1542,11 +1487,11 @@ function handlePeerConnected(e) {
         peerDatabases: analysis.summary.peerDatabases
       });
       
-      showToast(`IPFS analysis complete: ${analysis.summary.totalPins} pins, ${analysis.summary.orbitDatabases} OrbitDB databases`);
+toastService.show(`IPFS analysis complete: ${analysis.summary.totalPins} pins, ${analysis.summary.orbitDatabases} OrbitDB databases`);
       
     } catch (error) {
       console.error('❌ Error during IPFS analysis:', error);
-      showToast('Failed to analyze IPFS node');
+toastService.show('Failed to analyze IPFS node');
     }
   }
 </script>
