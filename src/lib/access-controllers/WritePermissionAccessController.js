@@ -18,11 +18,12 @@ const type = 'write-permission'
  * @returns {Function} Factory function that creates access controller instances
  */
 export const WritePermissionAccessController = (options = {}) => async ({ orbitdb, identities, address }) => {
+  // Use OrbitDB identity ID as owner (not libp2p peer ID)
   const ownerPeerId = options.ownerPeerId || orbitdb.identity.id
   const permissionTTL = options.permissionTTL || (48 * 60 * 60 * 1000) // 48 hours
-  
+
   console.log(`🔐 Creating WritePermissionAccessController for owner: ${ownerPeerId}`)
-  
+
   // Set address for the access controller - use the provided address or create a new one
   const controllerAddress = address || `/write-permission/${orbitdb.identity.id}/${Date.now()}`
   
@@ -91,10 +92,36 @@ export const WritePermissionAccessController = (options = {}) => async ({ orbitd
     return false
   }
   
+  /**
+   * Grant write permission to a peer for this database
+   * @param {string} peerId - The OrbitDB identity ID to grant permission to
+   * @param {number} duration - Permission duration in milliseconds (optional)
+   */
+  const grantWritePermission = (peerId, duration = null) => {
+    // The address parameter contains the actual database address when the database is opened
+    const databaseAddress = address
+
+    console.log(`🔍 Debug: Granting permission for database address: ${databaseAddress}`)
+    console.log(`🔍 Debug: Granting permission to OrbitDB identity: ${peerId}`)
+
+    grantWritePermissionToDatabase(databaseAddress, peerId, duration)
+  }
+
+  /**
+   * Revoke write permission from a peer for this database
+   * @param {string} peerId - The OrbitDB identity ID to revoke permission from
+   */
+  const revokeWritePermission = (peerId) => {
+    const databaseAddress = address || controllerAddress
+    revokeWritePermissionFromDatabase(databaseAddress, peerId)
+  }
+
   return {
     type,
     address: controllerAddress,
-    canAppend
+    canAppend,
+    grantWritePermission,
+    revokeWritePermission
   }
 }
 

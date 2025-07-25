@@ -1,11 +1,11 @@
-import { getTodoDatabase } from './database.js'
+import { getTodoDatabase, getMyOwnTodoDatabase } from './database.js'
 import { getLibP2P } from './network.js'
 
 /**
- * Add a new todo item
+ * Add a new todo item - ALWAYS writes to MY OWN database
  */
 export async function addTodo(text, assignee = null, helia) {
-  const db = await getTodoDatabase(helia)
+  const db = await getMyOwnTodoDatabase(helia)  // Use MY OWN database for writes
   const libp2p = getLibP2P()
   
   try {

@@ -345,6 +345,20 @@ export class IPFSAnalyzer {
 
       const processedDatabases = new Set();
 
+      // Get database instances for replication status
+      const { 
+        getCurrentTodoDB,
+        getPeerTodoDbInstances,
+        getPeerWritePermissionDbInstances
+      } = await import('../lib/p2p/database.js');
+      
+      const { getMyWritePermissionDatabase } = await import('../lib/write-permissions.js');
+      
+      const currentTodoDB = getCurrentTodoDB();
+      const myWritePermissionDB = getMyWritePermissionDatabase();
+      const peerTodoDbInstances = getPeerTodoDbInstances();
+      const peerWritePermissionDbInstances = getPeerWritePermissionDbInstances();
+
       // Add current TODO database
       this.addCurrentTodoDatabase(analysis, {
         currentDbAddress,
@@ -352,7 +366,8 @@ export class IPFSAnalyzer {
         myPeerIdStr,
         todos,
         storageUsage,
-        processedDatabases
+        processedDatabases,
+        dbInstance: currentTodoDB
       });
 
       // Add own write permission database
@@ -361,21 +376,24 @@ export class IPFSAnalyzer {
         getMyWritePermissionDatabaseName,
         myPeerIdStr,
         writePermissionRequests,
-        processedDatabases
+        processedDatabases,
+        dbInstance: myWritePermissionDB
       });
 
       // Add peer TODO databases
       this.addPeerTodoDatabases(analysis, {
         peerOrbitDbAddresses: peerOrbitDbAddressesMap,
         myPeerIdStr,
-        processedDatabases
+        processedDatabases,
+        peerTodoDbInstances
       });
 
       // Add peer write permission databases
       this.addPeerWritePermissionDatabases(analysis, {
         getPeerWritePermissionDbAddresses,
         myPeerIdStr,
-        processedDatabases
+        processedDatabases,
+        peerWritePermissionDbInstances
       });
 
     } catch (err) {
@@ -389,7 +407,7 @@ export class IPFSAnalyzer {
    * @param {Object} params - Parameters
    */
   addCurrentTodoDatabase(analysis, params) {
-    const { currentDbAddress, currentDbName, myPeerIdStr, todos, storageUsage, processedDatabases } = params;
+    const { currentDbAddress, currentDbName, myPeerIdStr, todos, storageUsage, processedDatabases, dbInstance } = params;
 
     if (currentDbAddress) {
       const displayName = currentDbName || 'My TODO Database';
@@ -404,6 +422,9 @@ export class IPFSAnalyzer {
       if (storageUsage) {
         dbSize = storageUsage.p2pDatabases.byType.orbitdb.size || 0;
       }
+      
+      // Get replication status
+      const replicationStatus = this.getReplicationStatus(dbInstance);
 
       analysis.orbitDatabases.push({
         address: currentDbAddress,
@@ -415,7 +436,8 @@ export class IPFSAnalyzer {
           id: myPeerIdStr,
           publicKey: analysis.identity?.publicKey
         },
-        records: todos.length
+        records: todos.length,
+        replication: replicationStatus
       });
 
       analysis.summary.ownDatabases++;
@@ -435,7 +457,8 @@ export class IPFSAnalyzer {
       getMyWritePermissionDatabaseName,
       myPeerIdStr,
       writePermissionRequests,
-      processedDatabases
+      processedDatabases,
+      dbInstance
     } = params;
 
     const myWritePermissionDbAddress = getMyWritePermissionDatabaseAddress();
@@ -454,6 +477,9 @@ export class IPFSAnalyzer {
       } catch (err) {
         console.warn('Could not get write permission request count:', err);
       }
+      
+      // Get replication status
+      const replicationStatus = this.getReplicationStatus(dbInstance);
 
       analysis.orbitDatabases.push({
         address: myWritePermissionDbAddress,
@@ -465,7 +491,8 @@ export class IPFSAnalyzer {
           id: myPeerIdStr,
           publicKey: analysis.identity?.publicKey
         },
-        records: requestCount
+        records: requestCount,
+        replication: replicationStatus
       });
 
       analysis.summary.ownDatabases++;
@@ -480,7 +507,7 @@ export class IPFSAnalyzer {
    * @param {Object} params - Parameters
    */
   addPeerTodoDatabases(analysis, params) {
-    const { peerOrbitDbAddresses, myPeerIdStr, processedDatabases } = params;
+    const { peerOrbitDbAddresses, myPeerIdStr, processedDatabases, peerTodoDbInstances } = params;
 
     for (const [peerId, dbAddress] of peerOrbitDbAddresses.entries()) {
       // Skip if we already processed this database or if it's our own
@@ -489,6 +516,10 @@ export class IPFSAnalyzer {
           peerId: this.formatPeerId(peerId),
           address: dbAddress
         });
+        
+        // Get database instance for replication status
+        const dbInstance = peerTodoDbInstances.get(peerId);
+        const replicationStatus = this.getReplicationStatus(dbInstance);
 
         analysis.orbitDatabases.push({
           address: dbAddress,
@@ -500,7 +531,8 @@ export class IPFSAnalyzer {
             id: peerId,
             publicKey: null
           },
-          records: 0
+          records: 0,
+          replication: replicationStatus
         });
 
         analysis.summary.peerDatabases++;
@@ -516,7 +548,7 @@ export class IPFSAnalyzer {
    * @param {Object} params - Parameters
    */
   addPeerWritePermissionDatabases(analysis, params) {
-    const { getPeerWritePermissionDbAddresses, myPeerIdStr, processedDatabases } = params;
+    const { getPeerWritePermissionDbAddresses, myPeerIdStr, processedDatabases, peerWritePermissionDbInstances } = params;
 
     const peerWritePermissionDbAddresses = getPeerWritePermissionDbAddresses();
     console.log('🔐 [IPFS Analysis Debug] Write permission databases:', {
@@ -531,6 +563,10 @@ export class IPFSAnalyzer {
           peerId: this.formatPeerId(peerId),
           address: dbAddress
         });
+        
+        // Get database instance for replication status
+        const dbInstance = peerWritePermissionDbInstances.get(peerId);
+        const replicationStatus = this.getReplicationStatus(dbInstance);
 
         analysis.orbitDatabases.push({
           address: dbAddress,
@@ -542,13 +578,70 @@ export class IPFSAnalyzer {
             id: peerId,
             publicKey: null
           },
-          records: 0
+          records: 0,
+          replication: replicationStatus
         });
 
         analysis.summary.peerDatabases++;
         analysis.summary.writePermissionDbCount++;
         processedDatabases.add(dbAddress);
       }
+    }
+  }
+  
+  /**
+   * Get replication status for a database instance
+   * @param {Object} dbInstance - OrbitDB database instance
+   * @returns {Object} Replication status information
+   */
+  getReplicationStatus(dbInstance) {
+    if (!dbInstance) {
+      return {
+        isOpen: false,
+        hasReplicator: false,
+        replicatorPeers: 0,
+        isReplicating: false,
+        hasEvents: false,
+        status: 'No Instance'
+      };
+    }
+    
+    try {
+      const status = {
+        isOpen: !!dbInstance.address,
+        hasReplicator: !!dbInstance.replicator,
+        replicatorPeers: dbInstance.replicator?.peers?.size || 0,
+        isReplicating: dbInstance.replicator?.started || false,
+        hasEvents: !!dbInstance.events,
+        dbName: dbInstance.dbName || 'Unknown',
+        type: dbInstance.type || 'Unknown'
+      };
+      
+      // Determine overall status
+      if (!status.isOpen) {
+        status.status = 'Closed';
+      } else if (status.hasReplicator && status.isReplicating && status.replicatorPeers > 0) {
+        status.status = `Replicating (${status.replicatorPeers} peers)`;
+      } else if (status.hasReplicator && status.isReplicating) {
+        status.status = 'Ready for Replication';
+      } else if (status.hasReplicator) {
+        status.status = 'Replicator Available';
+      } else {
+        status.status = 'Open - No Replicator';
+      }
+      
+      return status;
+    } catch (error) {
+      console.warn('Error getting replication status:', error);
+      return {
+        isOpen: false,
+        hasReplicator: false,
+        replicatorPeers: 0,
+        isReplicating: false,
+        hasEvents: false,
+        status: 'Error',
+        error: error.message
+      };
     }
   }
 }

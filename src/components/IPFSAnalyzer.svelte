@@ -472,6 +472,68 @@
                     </div>
                   {/if}
                 </div>
+                
+                <!-- Replication Status -->
+                {#if db.replication}
+                  <div class="mt-4 pt-3 border-t border-gray-200">
+                    <div class="text-gray-600 font-medium mb-2">🔄 Replication Status</div>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+                      <div class="flex items-center space-x-1">
+                        <span class="w-2 h-2 rounded-full {db.replication.isOpen ? 'bg-green-500' : 'bg-red-500'}"></span>
+                        <span class="{db.replication.isOpen ? 'text-green-700' : 'text-red-700'}">
+                          {db.replication.isOpen ? 'Open' : 'Closed'}
+                        </span>
+                      </div>
+                      
+                      <div class="flex items-center space-x-1">
+                        <span class="w-2 h-2 rounded-full {db.replication.hasReplicator ? 'bg-blue-500' : 'bg-gray-400'}"></span>
+                        <span class="{db.replication.hasReplicator ? 'text-blue-700' : 'text-gray-600'}">
+                          {db.replication.hasReplicator ? 'Has Replicator' : 'No Replicator'}
+                        </span>
+                      </div>
+                      
+                      <div class="flex items-center space-x-1">
+                        <span class="w-2 h-2 rounded-full {db.replication.isReplicating ? 'bg-purple-500' : 'bg-gray-400'}"></span>
+                        <span class="{db.replication.isReplicating ? 'text-purple-700' : 'text-gray-600'}">
+                          {db.replication.isReplicating ? 'Replicating' : 'Not Replicating'}
+                        </span>
+                      </div>
+                      
+                      <div class="flex items-center space-x-1">
+                        <span class="w-2 h-2 rounded-full {db.replication.replicatorPeers > 0 ? 'bg-yellow-500' : 'bg-gray-400'}"></span>
+                        <span class="{db.replication.replicatorPeers > 0 ? 'text-yellow-700' : 'text-gray-600'}">
+                          {db.replication.replicatorPeers} Peer{db.replication.replicatorPeers !== 1 ? 's' : ''}
+                        </span>
+                      </div>
+                      
+                      <div class="flex items-center space-x-1">
+                        <span class="w-2 h-2 rounded-full {db.replication.hasEvents ? 'bg-teal-500' : 'bg-gray-400'}"></span>
+                        <span class="{db.replication.hasEvents ? 'text-teal-700' : 'text-gray-600'}">
+                          {db.replication.hasEvents ? 'Events Active' : 'No Events'}
+                        </span>
+                      </div>
+                      
+                      <div class="md:col-span-1 col-span-2">
+                        <span class="font-medium text-gray-700">Status:</span>
+                        <span class="ml-1 px-2 py-1 rounded-full text-xs font-medium {
+                          db.replication.status.includes('Replicating') ? 'bg-green-100 text-green-800' :
+                          db.replication.status.includes('Ready') ? 'bg-blue-100 text-blue-800' :
+                          db.replication.status.includes('Available') ? 'bg-yellow-100 text-yellow-800' :
+                          db.replication.status.includes('Error') ? 'bg-red-100 text-red-800' :
+                          'bg-gray-100 text-gray-800'
+                        }">
+                          {db.replication.status}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {#if db.replication.error}
+                      <div class="mt-2 text-xs text-red-600 bg-red-50 p-2 rounded">
+                        Error: {db.replication.error}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
               </div>
             {/each}
           </div>

@@ -3,6 +3,7 @@ import { initializeP2P as initP2PNetwork, getLibP2P, getHelia, stopP2P } from '.
 import { 
   initializeOrbitDB, 
   getTodoDatabase, 
+  getMyOwnTodoDatabase,
   onDatabaseUpdate, 
   getTodoDbAddress, 
   getTodoDbName, 
@@ -37,6 +38,7 @@ import {
 export { 
   discoveredPeersStore,
   getTodoDatabase,
+  getMyOwnTodoDatabase,
   onDatabaseUpdate,
   getTodoDbAddress,
   getTodoDbName,
@@ -98,8 +100,8 @@ export async function initializeP2P() {
   // Initialize OrbitDB layer
   await initializeOrbitDB(helia)
   
-  // Open the default database
-  await getTodoDatabase(helia)
+  // Open my own database (ensures it's created)
+  await getMyOwnTodoDatabase(helia)
   
   console.log('✅ P2P system initialized successfully')
   return libp2p

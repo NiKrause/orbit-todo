@@ -94,7 +94,13 @@ export async function requestWritePermission(targetDatabaseAddress, targetPeerID
     throw new Error('LibP2P not initialized')
   }
 
+  const orbitdb = getOrbitDB()
+  if (!orbitdb) {
+    throw new Error('OrbitDB not initialized')
+  }
+
   const myPeerId = libp2p.peerId.toString()
+  const myOrbitDBIdentityId = orbitdb.identity.id
   const requestId = `${myPeerId}-${targetDatabaseAddress}-${Date.now()}`
 
   // Check if we already have a pending request
@@ -106,6 +112,7 @@ export async function requestWritePermission(targetDatabaseAddress, targetPeerID
   const request = {
     id: requestId,
     requesterPeerId: myPeerId,
+    requesterIdentityId: myOrbitDBIdentityId,
     targetDatabaseAddress,
     targetPeerID,
     reason,
@@ -142,8 +149,15 @@ export async function requestWritePermission(targetDatabaseAddress, targetPeerID
     }
     
     // Write to the target peer's database (not our own!)
+    console.log('📝 [DEBUG] About to call targetWritePermissionDB.set():', {
+      requestId,
+      request: JSON.stringify(request, null, 2),
+      targetWritePermissionDBAddress: targetWritePermissionDB.address.toString(),
+      targetWritePermissionDBName: targetWritePermissionDB.dbName
+    })
+    
     await targetWritePermissionDB.set(requestId, request)
-    console.log('✅ [DEBUG] Successfully wrote request to TARGET peer database')
+    console.log('✅ [DEBUG] Successfully wrote request to TARGET peer database - request should now replicate to target peer')
     
     pendingRequests.set(`${myPeerId}-${targetDatabaseAddress}`, request)
     console.log('💾 [DEBUG] Added to pending requests cache:', pendingRequests.size, 'total pending')
@@ -162,7 +176,13 @@ export async function requestWritePermission(targetDatabaseAddress, targetPeerID
       console.log('🔍 [DEBUG] Target database state after write:', {
         entryCount: Object.keys(updatedEntries).length,
         entries: Object.keys(updatedEntries),
-        newlyWrittenExists: !!updatedEntries[requestId]
+        newlyWrittenExists: !!updatedEntries[requestId],
+        requestIdWeWrote: requestId,
+        allEntriesDetailed: Object.entries(updatedEntries).map(([key, value]) => ({
+          key,
+          value: value?.value || value,
+          isOurRequest: key === requestId
+        }))
       })
     } catch (verifyError) {
       console.warn('⚠️ [DEBUG] Failed to verify request was written to target database:', verifyError)
@@ -234,7 +254,7 @@ export async function grantWritePermission(requestId) {
     // Grant actual write permission to the database
     const currentDB = getCurrentTodoDB()
     if (currentDB && currentDB.access && typeof currentDB.access.grantWritePermission === 'function') {
-      currentDB.access.grantWritePermission(request.requesterPeerId)
+      currentDB.access.grantWritePermission(request.requesterIdentityId)
     }
 
     console.log('✅ Write permission granted:', {
@@ -321,8 +341,21 @@ export async function getWritePermissionRequests() {
     const requests = Object.values(allRequests).map(entry => entry.value || entry)
     console.log('🔍 [DEBUG] Processed requests:', requests)
     
-    // Filter out expired requests
+    // Filter out expired requests and discovery markers
     const validRequests = requests.filter(request => {
+      // Skip discovery markers - they're not permission requests
+      if (request.type === 'write-permission-database' && request.purpose) {
+        console.log('🔍 [DEBUG] Skipping discovery marker:', request)
+        return false
+      }
+      
+      // Only process items that look like permission requests
+      if (!request.id || !request.status || !request.requestedAt || !request.expiresAt) {
+        console.log('🔍 [DEBUG] Skipping invalid request structure:', request)
+        return false
+      }
+      
+      // Check if request is not expired
       const isValid = new Date(request.expiresAt) > new Date()
       if (!isValid) {
         console.log('🗑️ [DEBUG] Filtering out expired request:', request.id)
@@ -508,12 +541,15 @@ function setupWritePermissionEventListeners() {
   })
   
   myWritePermissionDB.events.on('update', async (entry) => {
-    console.log('📝 [EVENT] Write permission database update received:', {
+    console.log('🔔 [EVENT] BROWSER B - Write permission database update received!', {
+      timestamp: new Date().toISOString(),
       entry,
       payload: entry.payload,
       operation: entry.payload?.op,
       key: entry.payload?.key,
-      value: entry.payload?.value
+      value: entry.payload?.value,
+      entryType: typeof entry,
+      databaseAddress: myWritePermissionDB.address.toString()
     })
     
     // Check if this is a new request (status === 'pending')
