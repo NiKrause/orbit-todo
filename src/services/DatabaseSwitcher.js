@@ -87,7 +87,7 @@ export class DatabaseSwitcher {
       const writePermissionResult = await this.handleWritePermissions(
         selectedPeerId,
         dbAddress,
-        peerOrbitDbAddresses,
+        updatedPeerOrbitDbAddresses,
         hasWritePermission,
         requestWritePermission,
         updateWritePermissionRequests

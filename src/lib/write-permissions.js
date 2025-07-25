@@ -507,16 +507,6 @@ function setupWritePermissionEventListeners() {
     dbName: myWritePermissionDB.dbName
   })
   
-  // Add a protective check - monitor if the database gets closed unexpectedly
-  const originalClose = myWritePermissionDB.close
-  if (originalClose) {
-    myWritePermissionDB.close = function(...args) {
-      console.warn('⚠️ [PROTECT] Write permission database close() called! This might break event listening.')
-      console.trace('Close called from:')
-      return originalClose.apply(this, args)
-    }
-  }
-
   myWritePermissionDB.events.on('update', async (entry) => {
     console.log('📝 [EVENT] Write permission database update received:', {
       entry,

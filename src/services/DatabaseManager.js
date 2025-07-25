@@ -545,11 +545,43 @@ export class DatabaseManager {
   }
 
   /**
-   * View database contents
+   * View database contents with state management
+   * @param {string} dbName - Database name
+   * @param {string} currentViewingDatabase - Currently viewing database
+   * @returns {Promise<Object>} View state updates
+   */
+  async viewDatabaseContents(dbName, currentViewingDatabase) {
+    try {
+      if (currentViewingDatabase === dbName) {
+        // Hide if already viewing
+        return {
+          viewingDatabase: null,
+          databaseContents: {}
+        };
+      }
+      
+      const storeContents = await this.getDatabaseContents(dbName);
+      
+      return {
+        viewingDatabase: dbName,
+        databaseContents: {
+          [dbName]: storeContents
+        }
+      };
+      
+    } catch (error) {
+      console.error('❌ Error viewing database contents:', error);
+      this.toastService.show('Failed to view database contents');
+      return null;
+    }
+  }
+
+  /**
+   * Get database contents (internal method)
    * @param {string} dbName - Database name
    * @returns {Promise<Array>} Store contents
    */
-  async viewDatabaseContents(dbName) {
+  async getDatabaseContents(dbName) {
     try {
       console.log('👀 Viewing database contents:', dbName);
       this.toastService.show('Loading database contents...');
@@ -614,11 +646,83 @@ export class DatabaseManager {
   }
 
   /**
-   * Delete a single database
+   * Delete a single database with state management
+   * @param {string} dbName - Database name
+   * @param {Array} browserDatabases - Current database list
+   * @param {Object} storageUsage - Current storage usage
+   * @param {string} viewingDatabase - Currently viewing database
+   * @param {Object} databaseContents - Current database contents
+   * @returns {Promise<Object|null>} State updates or null
+   */
+  async deleteSingleDatabase(dbName, browserDatabases, storageUsage, viewingDatabase, databaseContents) {
+    const success = await this.deleteDatabase(dbName);
+    
+    if (success) {
+      // Find the deleted database to get its size
+      const deletedDb = browserDatabases.find(db => db.name === dbName);
+      const deletedSize = deletedDb?.estimatedSize || 0;
+      
+      // Remove from database list
+      const updatedDatabases = browserDatabases.filter(db => db.name !== dbName);
+      
+      // Update storage usage if it exists
+      let updatedStorageUsage = storageUsage;
+      if (storageUsage && deletedDb) {
+        updatedStorageUsage = { ...storageUsage };
+        
+        // Update total size
+        updatedStorageUsage.p2pDatabases.totalSize -= deletedSize;
+        
+        // Update active/inactive sizes
+        if (deletedDb.isActive) {
+          updatedStorageUsage.p2pDatabases.activeDatabasesSize -= deletedSize;
+          updatedStorageUsage.p2pDatabases.active -= 1;
+        } else {
+          updatedStorageUsage.p2pDatabases.inactiveDatabasesSize -= deletedSize;
+          updatedStorageUsage.p2pDatabases.inactive -= 1;
+        }
+        
+        // Update by type
+        if (deletedDb.activeType) {
+          const typeKey = deletedDb.activeType;
+          if (updatedStorageUsage.p2pDatabases.byType[typeKey]) {
+            updatedStorageUsage.p2pDatabases.byType[typeKey].size -= deletedSize;
+            updatedStorageUsage.p2pDatabases.byType[typeKey].count -= 1;
+          }
+        } else {
+          updatedStorageUsage.p2pDatabases.byType.other.size -= deletedSize;
+          updatedStorageUsage.p2pDatabases.byType.other.count -= 1;
+        }
+        
+        // Update total count
+        updatedStorageUsage.p2pDatabases.total -= 1;
+      }
+      
+      // Clear viewing state if we were viewing this database
+      let updatedViewingDatabase = viewingDatabase;
+      let updatedDatabaseContents = { ...databaseContents };
+      if (viewingDatabase === dbName) {
+        updatedViewingDatabase = null;
+        delete updatedDatabaseContents[dbName];
+      }
+      
+      return {
+        browserDatabases: updatedDatabases,
+        storageUsage: updatedStorageUsage,
+        viewingDatabase: updatedViewingDatabase,
+        databaseContents: updatedDatabaseContents
+      };
+    }
+    
+    return null;
+  }
+
+  /**
+   * Delete a single database (core method)
    * @param {string} dbName - Database name
    * @returns {Promise<boolean>} Success status
    */
-  async deleteSingleDatabase(dbName) {
+  async deleteSingleDatabaseCore(dbName) {
     if (!confirm(`Are you sure you want to delete the database "${dbName}"? This action cannot be undone.`)) {
       return false;
     }
@@ -656,11 +760,85 @@ export class DatabaseManager {
   }
 
   /**
-   * Delete all inactive databases
+   * Delete all inactive databases with state management
+   * @param {Array} browserDatabases - All databases
+   * @param {string} viewingDatabase - Currently viewing database
+   * @param {Object} databaseContents - Current database contents
+   * @returns {Promise<Object|null>} State updates or null
+   */
+  async deleteAllInactiveDatabases(browserDatabases, viewingDatabase, databaseContents) {
+    const inactiveDatabases = browserDatabases.filter(db => !db.isActive);
+    
+    if (inactiveDatabases.length === 0) {
+      this.toastService.show('No inactive databases to delete');
+      return null;
+    }
+    
+    if (!confirm(`Are you sure you want to delete ${inactiveDatabases.length} inactive P2P databases? This action cannot be undone.`)) {
+      return null;
+    }
+    
+    try {
+      console.log('🗑️ Deleting inactive databases:', inactiveDatabases.length);
+      this.toastService.show('Deleting inactive databases...');
+      
+      let deletedCount = 0;
+      let failedCount = 0;
+      
+      for (const db of inactiveDatabases) {
+        try {
+          const success = await this.deleteDatabase(db.name);
+          if (success) {
+            deletedCount++;
+          } else {
+            failedCount++;
+          }
+        } catch (error) {
+          console.error('Error deleting inactive database:', db.name, error);
+          failedCount++;
+        }
+      }
+      
+      // Update database list - remove deleted databases
+      const updatedDatabases = browserDatabases.filter(db => 
+        db.isActive || !inactiveDatabases.some(deleted => deleted.name === db.name)
+      );
+      
+      // Clear viewing state if we were viewing a deleted database
+      let updatedViewingDatabase = viewingDatabase;
+      let updatedDatabaseContents = { ...databaseContents };
+      if (viewingDatabase && inactiveDatabases.some(db => db.name === viewingDatabase)) {
+        updatedViewingDatabase = null;
+        delete updatedDatabaseContents[viewingDatabase];
+      }
+      
+      if (failedCount === 0) {
+        this.toastService.show(`✅ Successfully deleted ${deletedCount} inactive databases`);
+      } else {
+        this.toastService.show(`⚠️ Deleted ${deletedCount} inactive databases, failed to delete ${failedCount}`);
+      }
+      
+      console.log(`🧹 Inactive database cleanup complete: ${deletedCount} deleted, ${failedCount} failed`);
+      
+      return {
+        browserDatabases: updatedDatabases,
+        viewingDatabase: updatedViewingDatabase,
+        databaseContents: updatedDatabaseContents
+      };
+      
+    } catch (error) {
+      console.error('❌ Error during inactive database deletion:', error);
+      this.toastService.show('Failed to delete inactive databases');
+      return null;
+    }
+  }
+
+  /**
+   * Delete all inactive databases (core method)
    * @param {Array} databases - All databases
    * @returns {Promise<Object>} Deletion results
    */
-  async deleteAllInactiveDatabases(databases) {
+  async deleteAllInactiveDatabasesCore(databases) {
     const inactiveDatabases = databases.filter(db => !db.isActive);
 
     if (inactiveDatabases.length === 0) {
@@ -710,11 +888,69 @@ export class DatabaseManager {
   }
 
   /**
-   * Delete all databases
+   * Delete all databases with state management
+   * @param {Array} browserDatabases - All databases
+   * @returns {Promise<Object|null>} State updates or null
+   */
+  async deleteAllDatabases(browserDatabases) {
+    if (!confirm(`Are you sure you want to delete ALL ${browserDatabases.length} P2P databases? This action cannot be undone and will reset all your P2P data.`)) {
+      return null;
+    }
+    
+    const secondConfirm = confirm('This will delete all Libp2p, Helia, and OrbitDB data. Are you absolutely sure?');
+    if (!secondConfirm) {
+      return null;
+    }
+    
+    try {
+      console.log('🗑️ Deleting all databases:', browserDatabases.length);
+      this.toastService.show('Deleting all databases...');
+      
+      let deletedCount = 0;
+      let failedCount = 0;
+      
+      for (const db of browserDatabases) {
+        try {
+          const success = await this.deleteDatabase(db.name);
+          if (success) {
+            deletedCount++;
+          } else {
+            failedCount++;
+          }
+        } catch (error) {
+          console.error('Error deleting database:', db.name, error);
+          failedCount++;
+        }
+      }
+      
+      if (failedCount === 0) {
+        this.toastService.show(`✅ Successfully deleted all ${deletedCount} databases`);
+      } else {
+        this.toastService.show(`⚠️ Deleted ${deletedCount} databases, failed to delete ${failedCount}`);
+      }
+      
+      console.log(`🧹 Database cleanup complete: ${deletedCount} deleted, ${failedCount} failed`);
+      
+      // Return cleared state
+      return {
+        browserDatabases: [],
+        viewingDatabase: null,
+        databaseContents: {}
+      };
+      
+    } catch (error) {
+      console.error('❌ Error during bulk database deletion:', error);
+      this.toastService.show('Failed to delete all databases');
+      return null;
+    }
+  }
+
+  /**
+   * Delete all databases (core method)
    * @param {Array} databases - All databases
    * @returns {Promise<Object>} Deletion results
    */
-  async deleteAllDatabases(databases) {
+  async deleteAllDatabasesCore(databases) {
     if (!confirm(`Are you sure you want to delete ALL ${databases.length} P2P databases? This action cannot be undone and will reset all your P2P data.`)) {
       return { deletedCount: 0, failedCount: 0 };
     }

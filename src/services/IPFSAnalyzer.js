@@ -25,20 +25,17 @@ export class IPFSAnalyzer {
    * @param {Object} dependencies.storageUsage - Storage usage information
    * @returns {Promise<Object>} Analysis results
    */
-  async analyzeIPFS(dependencies) {
+  async analyzeIPFS({
+    getTodoDbAddress,
+    getTodoDbName,
+    getMyPeerId,
+    todos,
+    peerOrbitDbAddresses,
+    writePermissionRequests,
+    storageUsage}) {
     const {
-      getHelia,
-      getTodoDbAddress,
-      getTodoDbName,
-      getMyPeerId,
-      getPeerOrbitDbAddresses,
-      getPeerWritePermissionDbAddresses,
-      getMyWritePermissionDatabaseAddress,
-      getMyWritePermissionDatabaseName,
-      todos,
-      writePermissionRequests,
-      storageUsage
-    } = dependencies;
+      getHelia
+    } = await import('../lib/p2p/network.js');
 
     try {
       console.log('🔍 Starting IPFS analysis...');
@@ -62,11 +59,8 @@ export class IPFSAnalyzer {
         getTodoDbAddress,
         getTodoDbName,
         getMyPeerId,
-        getPeerOrbitDbAddresses,
-        getPeerWritePermissionDbAddresses,
-        getMyWritePermissionDatabaseAddress,
-        getMyWritePermissionDatabaseName,
         todos,
+        peerOrbitDbAddresses,
         writePermissionRequests,
         storageUsage
       });
@@ -321,27 +315,31 @@ export class IPFSAnalyzer {
       getTodoDbAddress,
       getTodoDbName,
       getMyPeerId,
-      getPeerOrbitDbAddresses,
-      getPeerWritePermissionDbAddresses,
-      getMyWritePermissionDatabaseAddress,
-      getMyWritePermissionDatabaseName,
       todos,
+      peerOrbitDbAddresses,
       writePermissionRequests,
       storageUsage
     } = dependencies;
 
     try {
+      // Import required functions dynamically
+      const { getPeerWritePermissionDbAddresses } = await import('../lib/p2p/database.js');
+      const { 
+        getMyWritePermissionDatabaseAddress, 
+        getMyWritePermissionDatabaseName 
+      } = await import('../lib/write-permissions.js');
+
       const currentDbAddress = getTodoDbAddress();
       const currentDbName = getTodoDbName();
       const myPeerIdStr = getMyPeerId();
-      const peerOrbitDbAddresses = getPeerOrbitDbAddresses();
+      const peerOrbitDbAddressesMap = peerOrbitDbAddresses;
 
       console.log('🔍 [IPFS Analysis Debug] Database detection values:', {
         currentDbAddress,
         currentDbName,
         myPeerIdStr,
-        peerOrbitDbAddressesSize: peerOrbitDbAddresses.size,
-        peerOrbitDbAddresses: Array.from(peerOrbitDbAddresses.entries()),
+        peerOrbitDbAddressesSize: peerOrbitDbAddressesMap.size,
+        peerOrbitDbAddresses: Array.from(peerOrbitDbAddressesMap.entries()),
         todosLength: todos.length
       });
 
@@ -368,7 +366,7 @@ export class IPFSAnalyzer {
 
       // Add peer TODO databases
       this.addPeerTodoDatabases(analysis, {
-        peerOrbitDbAddresses,
+        peerOrbitDbAddresses: peerOrbitDbAddressesMap,
         myPeerIdStr,
         processedDatabases
       });

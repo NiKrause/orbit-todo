@@ -3,6 +3,8 @@ node_modules
 dist
 relay-datastore
 test-results
+test-orbitdb-browser*
+orbitdb-*
 
 # Output
 .output

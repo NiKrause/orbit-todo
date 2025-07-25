@@ -5,14 +5,23 @@
   export let peers;
   export let peerOrbitDbAddresses;
   export let onDatabaseSwitch;
+  export let onSelectedPeerIdChange;
+  
+  function handleChange(event) {
+    const newPeerId = event.target.value;
+    if (onSelectedPeerIdChange) {
+      onSelectedPeerIdChange(newPeerId);
+    }
+    onDatabaseSwitch(newPeerId);
+  }
 </script>
 
 <div class="mb-6 flex items-center gap-4">
   <label for="peer-db-select" class="font-medium">View TODOs from:</label>
   <select
     id="peer-db-select"
-    bind:value={selectedPeerId}
-    on:change={onDatabaseSwitch}
+    value={selectedPeerId}
+    on:change={handleChange}
     class="px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
   >
     <option value="">My DB (default)</option>

@@ -425,6 +425,110 @@ export class WritePermissionManager {
   }
 
   /**
+   * Request write permission from a target peer
+   * @param {string} targetPeerId - Target peer ID
+   * @param {Map} peerOrbitDbAddresses - Map of peer OrbitDB addresses
+   * @param {Function} updateCallback - Callback to update UI state
+   * @returns {Promise<void>}
+   */
+  async requestPermission(targetPeerId, peerOrbitDbAddresses, updateCallback) {
+    if (!targetPeerId || !peerOrbitDbAddresses.has(targetPeerId)) {
+      this.toastService.show('Cannot request permission: peer database not found');
+      return;
+    }
+    
+    try {
+      const { requestWritePermission } = await import('../lib/p2p.js');
+      const targetDbAddress = peerOrbitDbAddresses.get(targetPeerId);
+      const reason = `Requesting write access to collaborate on TODOs`;
+      
+      await requestWritePermission(targetDbAddress, targetPeerId, reason);
+      this.toastService.show(`Write permission request sent to ${this.formatPeerId(targetPeerId)}`);
+      
+      // Update UI
+      await updateCallback();
+    } catch (err) {
+      console.error('Failed to request write permission:', err);
+      this.toastService.show('Failed to send write permission request');
+    }
+  }
+
+  /**
+   * Grant a write permission request
+   * @param {string} requestId - Request ID to grant
+   * @param {Function} updateCallback - Callback to update UI state
+   * @returns {Promise<void>}
+   */
+  async grantPermission(requestId, updateCallback) {
+    try {
+      const { grantWritePermission } = await import('../lib/p2p.js');
+      await grantWritePermission(requestId);
+      this.toastService.show('Write permission granted!');
+      await updateCallback();
+    } catch (err) {
+      console.error('Failed to grant write permission:', err);
+      this.toastService.show('Failed to grant write permission');
+    }
+  }
+
+  /**
+   * Deny a write permission request
+   * @param {string} requestId - Request ID to deny
+   * @param {string} reason - Reason for denial
+   * @param {Function} updateCallback - Callback to update UI state
+   * @returns {Promise<void>}
+   */
+  async denyPermission(requestId, reason = '', updateCallback) {
+    try {
+      const { denyWritePermission } = await import('../lib/p2p.js');
+      await denyWritePermission(requestId, reason);
+      this.toastService.show('Write permission denied');
+      await updateCallback();
+    } catch (err) {
+      console.error('Failed to deny write permission:', err);
+      this.toastService.show('Failed to deny write permission');
+    }
+  }
+
+  /**
+   * Update write permission requests state
+   * @param {string} dbAddress - Current database address
+   * @param {string} selectedPeerId - Currently selected peer ID
+   * @param {Function} stateCallback - Callback to update state
+   * @returns {Promise<void>}
+   */
+  async updateRequests(dbAddress, selectedPeerId, stateCallback) {
+    try {
+      console.log('🔄 [UI DEBUG] Updating write permission requests...');
+      
+      const { 
+        getMyWritePermissionRequests,
+        getMyOutgoingWritePermissionRequests,
+        hasWritePermission,
+        getMyPeerId
+      } = await import('../lib/p2p.js');
+      
+      const myPeerId = getMyPeerId();
+      console.log('🔄 [UI DEBUG] My peer ID from UI context:', myPeerId);
+      
+      const incomingRequests = await getMyWritePermissionRequests();
+      const outgoingRequests = await getMyOutgoingWritePermissionRequests();
+      
+      console.log('🔄 [UI DEBUG] Got requests:', {
+        incoming: incomingRequests.length,
+        outgoing: outgoingRequests.length
+      });
+      
+      // Check write permission for current database
+      const canWrite = await hasWritePermission(dbAddress, selectedPeerId);
+      
+      stateCallback(incomingRequests, outgoingRequests, canWrite);
+    } catch (err) {
+      console.error('Failed to update write permission requests:', err);
+    }
+  }
+
+  /**
    * Get write permission statistics
    * @param {Array} writePermissionRequests - Write permission requests
    * @param {Object} dependencies - Required functions and data
