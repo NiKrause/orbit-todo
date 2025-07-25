@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { 
+import { 
     initializeP2P, 
     addTodo, 
     getAllTodos, 
@@ -24,6 +24,12 @@
     hasWritePermission,
     writePermissionRequestsStore
   } from './lib/p2p.js'
+  import { getPeerWritePermissionDbAddresses } from './lib/p2p/database.js'
+  import { 
+    getMyWritePermissionDatabase, 
+    getMyWritePermissionDatabaseAddress, 
+    getMyWritePermissionDatabaseName 
+  } from './lib/write-permissions.js'
   import { discoverRelay } from './utils/relay-discovery.js'
   import { getHelia } from './lib/p2p/network.js'
 
@@ -35,6 +41,7 @@
   import TodoList from './components/TodoList.svelte'
   import PeerStatus from './components/PeerStatus.svelte'
   import WritePermissions from './components/WritePermissions.svelte'
+  import IPFSAnalyzer from './components/IPFSAnalyzer.svelte'
   import DatabaseManager from './components/DatabaseManager.svelte'
   import RelayStatus from './components/RelayStatus.svelte'
 
@@ -65,6 +72,10 @@
   let viewingDatabase = null;
   let databaseContents = {};
   let storageUsage = null;
+  
+  // IPFS Analyzer variables
+  let showIPFSDetails = false;
+  let ipfsAnalysis = null;
 
   function showToast(message) {
     toastMessage = message;
@@ -1196,6 +1207,337 @@ function handlePeerConnected(e) {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
+  
+  // IPFS Analysis Functions
+  async function analyzeIPFS() {
+    try {
+      console.log('🔍 Starting IPFS analysis...');
+      showToast('Analyzing IPFS node...');
+      
+      const { getHelia } = await import('./lib/p2p/network.js');
+      const helia = getHelia();
+      
+      if (!helia) {
+        throw new Error('Helia instance not available');
+      }
+      
+      const analysis = {
+        summary: {
+          totalPins: 0,
+          totalSize: 0,
+          recursivePins: 0,
+          directPins: 0,
+          orbitDatabases: 0,
+          ownDatabases: 0,
+          peerDatabases: 0,
+          orbitDbSize: 0
+        },
+        pins: [],
+        orbitDatabases: [],
+        identity: null
+      };
+      
+      // Get identity info
+      try {
+        const peerId = helia.libp2p.peerId;
+        analysis.identity = {
+          peerId: peerId.toString(),
+          publicKey: peerId.publicKey ? peerId.publicKey.toString('hex') : null,
+          keyType: peerId.type || 'Unknown'
+        };
+      } catch (err) {
+        console.warn('Could not get identity info:', err);
+      }
+      
+      // Get pinned content
+      try {
+        const pins = helia.pins.ls();
+        
+        for await (const pin of pins) {
+          const cid = pin.cid.toString();
+          
+          // Get pin details
+          let size = 0;
+          let blocks = 0;
+          let metadata = {};
+          
+          try {
+            // For recursive pins, try to calculate DAG size
+            if (pin.type === 'recursive') {
+              console.log(`🌳 Calculating recursive DAG size for ${cid.substring(0, 12)}...`);
+              
+              // Try to walk the DAG and sum all blocks
+              try {
+                let totalSize = 0;
+                let blockCount = 0;
+                
+                // Use the DAG walk to get all blocks in the DAG
+                for await (const block of helia.blockstore.getMany([pin.cid])) {
+                  totalSize += block.bytes.length;
+                  blockCount++;
+                  
+                  // Limit to prevent infinite loops on large DAGs
+                  if (blockCount > 1000) {
+                    console.log(`⚠️ Stopping DAG walk at 1000 blocks for ${cid.substring(0, 12)}`);
+                    break;
+                  }
+                }
+                
+                if (totalSize > 0) {
+                  size = totalSize;
+                  blocks = blockCount;
+                  console.log(`🌳 Recursive pin ${cid.substring(0, 12)}... DAG size: ${size} bytes (${blocks} blocks)`);
+                } else {
+                  // Fallback: try to get just the root block
+                  const rootBlock = await helia.blockstore.get(pin.cid);
+                  size = rootBlock.bytes.length;
+                  blocks = 1;
+                  console.log(`📦 Recursive pin ${cid.substring(0, 12)}... root block only: ${size} bytes`);
+                }
+              } catch (dagErr) {
+                console.warn(`⚠️ DAG walk failed for ${cid.substring(0, 12)}:`, dagErr.message);
+                // Fallback to root block
+                try {
+                  const rootBlock = await helia.blockstore.get(pin.cid);
+                  size = rootBlock.bytes.length;
+                  blocks = 1;
+                  console.log(`📦 Recursive pin ${cid.substring(0, 12)}... fallback to root: ${size} bytes`);
+                } catch (rootErr) {
+                  size = 4096; // Larger default for recursive pins
+                  console.log(`⚠️ Recursive pin ${cid.substring(0, 12)}... using large default: ${size} bytes`);
+                }
+              }
+            } else {
+              // For direct pins, just get the single block
+              try {
+                const block = await helia.blockstore.get(pin.cid);
+                size = block.bytes.length;
+                blocks = 1;
+                console.log(`📦 Direct pin ${cid.substring(0, 12)}... size: ${size} bytes`);
+              } catch (blockErr) {
+                console.warn(`⚠️ Could not get block for direct pin ${cid.substring(0, 12)}:`, blockErr.message);
+                size = 256; // Smaller default for direct pins
+                console.log(`⚠️ Direct pin ${cid.substring(0, 12)}... using small default: ${size} bytes`);
+              }
+            }
+          } catch (err) {
+            console.error(`❌ Error calculating size for pin ${cid.substring(0, 12)}:`, err);
+            size = pin.type === 'recursive' ? 4096 : 256;
+            console.log(`⚠️ Pin ${cid.substring(0, 12)}... using ${pin.type} default: ${size} bytes`);
+          }
+          
+          // Check if this might be an OrbitDB CID
+          if (pin.type === 'recursive') {
+            try {
+              // Try to decode as OrbitDB manifest
+              const block = await helia.blockstore.get(pin.cid);
+              const decoded = JSON.parse(new TextDecoder().decode(block.bytes));
+              
+              if (decoded.type && (decoded.type === 'orbitdb' || decoded.name)) {
+                metadata.isOrbitDB = true;
+                metadata.dbType = decoded.type;
+                metadata.dbName = decoded.name;
+              }
+            } catch (err) {
+              // Not an OrbitDB manifest, continue
+            }
+          }
+          
+          if (blocks > 0) {
+            metadata.blocks = blocks;
+          }
+          
+          metadata.lastAccessed = new Date().toISOString();
+          
+          analysis.pins.push({
+            cid,
+            type: pin.type,
+            size,
+            metadata
+          });
+          
+          // Update summary
+          analysis.summary.totalPins++;
+          analysis.summary.totalSize += size;
+          
+          if (pin.type === 'recursive') {
+            analysis.summary.recursivePins++;
+          } else {
+            analysis.summary.directPins++;
+          }
+          
+          if (metadata.isOrbitDB) {
+            analysis.summary.orbitDatabases++;
+            analysis.summary.orbitDbSize += size;
+          }
+        }
+      } catch (err) {
+        console.warn('Could not analyze pins:', err);
+      }
+      
+      // Analyze OrbitDB databases from current app context
+      try {
+        const currentDbAddress = getTodoDbAddress();
+        const currentDbName = getTodoDbName();
+        const myPeerIdStr = getMyPeerId();
+        
+        console.log('🔍 [IPFS Analysis Debug] Database detection values:', {
+          currentDbAddress,
+          currentDbName,
+          myPeerIdStr,
+          peerOrbitDbAddressesSize: peerOrbitDbAddresses.size,
+          peerOrbitDbAddresses: Array.from(peerOrbitDbAddresses.entries()),
+          todosLength: todos.length
+        });
+        
+        // Create a set to track processed databases
+        const processedDatabases = new Set();
+        
+        // Add current database info (fix for null dbName)
+        if (currentDbAddress) {
+          const displayName = currentDbName || 'My TODO Database';
+          console.log('✅ [IPFS Analysis Debug] Adding current database as own:', {
+            address: currentDbAddress,
+            name: displayName,
+            originalDbName: currentDbName
+          });
+          // Try to get database size from our storage analysis
+          let dbSize = 0;
+          if (storageUsage) {
+            dbSize = storageUsage.p2pDatabases.byType.orbitdb.size || 0;
+          }
+          
+          analysis.orbitDatabases.push({
+            address: currentDbAddress,
+            name: currentDbName,
+            type: 'documents', // Our todo app uses documents store
+            isOwn: true, // Current database is always ours
+            size: dbSize,
+            identity: {
+              id: myPeerIdStr,
+              publicKey: analysis.identity?.publicKey
+            },
+            records: todos.length
+          });
+          
+          analysis.summary.ownDatabases++;
+          processedDatabases.add(currentDbAddress);
+        }
+        
+        // Add my own write permission database
+        const myWritePermissionDbAddress = getMyWritePermissionDatabaseAddress();
+        const myWritePermissionDbName = getMyWritePermissionDatabaseName();
+        if (myWritePermissionDbAddress) {
+          console.log('✅ [IPFS Analysis Debug] Adding my write permission database:', {
+            address: myWritePermissionDbAddress,
+            name: myWritePermissionDbName
+          });
+          
+          // Try to get write permission request count
+          let requestCount = 0;
+          try {
+            requestCount = writePermissionRequests.length;
+          } catch (err) {
+            console.warn('Could not get write permission request count:', err);
+          }
+          
+          analysis.orbitDatabases.push({
+            address: myWritePermissionDbAddress,
+            name: myWritePermissionDbName || 'My Write Permission Database',
+            type: 'write-permissions',
+            isOwn: true,
+            size: 0, // We could get this from storage analysis if needed
+            identity: {
+              id: myPeerIdStr,
+              publicKey: analysis.identity?.publicKey
+            },
+            records: requestCount
+          });
+          
+          analysis.summary.ownDatabases++;
+          processedDatabases.add(myWritePermissionDbAddress);
+        }
+        
+        // Add peer TODO databases from peerOrbitDbAddresses (excluding our own)
+        for (const [peerId, dbAddress] of peerOrbitDbAddresses.entries()) {
+          // Skip if we already processed this database or if it's our own
+          if (!processedDatabases.has(dbAddress) && peerId !== myPeerIdStr) {
+            console.log('📋 [IPFS Analysis Debug] Adding peer TODO database:', {
+              peerId: formatPeerId(peerId),
+              address: dbAddress
+            });
+            
+            analysis.orbitDatabases.push({
+              address: dbAddress,
+              name: `${formatPeerId(peerId)}'s TODO Database`,
+              type: 'documents',
+              isOwn: false,
+              size: 0, // We don't know the size of peer databases
+              identity: {
+                id: peerId,
+                publicKey: null // We don't have peer public keys
+              },
+              records: 0 // We don't know record count
+            });
+            
+            analysis.summary.peerDatabases++;
+            processedDatabases.add(dbAddress);
+          }
+        }
+        
+        // Add peer write permission databases
+        const peerWritePermissionDbAddresses = getPeerWritePermissionDbAddresses();
+        console.log('🔐 [IPFS Analysis Debug] Write permission databases:', {
+          size: peerWritePermissionDbAddresses.size,
+          entries: Array.from(peerWritePermissionDbAddresses.entries())
+        });
+        
+        for (const [peerId, dbAddress] of peerWritePermissionDbAddresses.entries()) {
+          // Skip if we already processed this database or if it's our own
+          if (!processedDatabases.has(dbAddress) && peerId !== myPeerIdStr) {
+            console.log('🔐 [IPFS Analysis Debug] Adding peer write permission database:', {
+              peerId: formatPeerId(peerId),
+              address: dbAddress
+            });
+            
+            analysis.orbitDatabases.push({
+              address: dbAddress,
+              name: `${formatPeerId(peerId)}'s Write Permission Database`,
+              type: 'write-permissions',
+              isOwn: false,
+              size: 0, // We don't know the size of peer databases
+              identity: {
+                id: peerId,
+                publicKey: null // We don't have peer public keys
+              },
+              records: 0 // We don't know record count
+            });
+            
+            analysis.summary.peerDatabases++;
+            processedDatabases.add(dbAddress);
+          }
+        }
+      } catch (err) {
+        console.warn('Could not analyze OrbitDB databases:', err);
+      }
+      
+      ipfsAnalysis = analysis;
+      
+      console.log('🔍 IPFS analysis complete:', {
+        totalPins: analysis.summary.totalPins,
+        totalSize: formatBytes(analysis.summary.totalSize),
+        orbitDatabases: analysis.summary.orbitDatabases,
+        ownDatabases: analysis.summary.ownDatabases,
+        peerDatabases: analysis.summary.peerDatabases
+      });
+      
+      showToast(`IPFS analysis complete: ${analysis.summary.totalPins} pins, ${analysis.summary.orbitDatabases} OrbitDB databases`);
+      
+    } catch (error) {
+      console.error('❌ Error during IPFS analysis:', error);
+      showToast('Failed to analyze IPFS node');
+    }
+  }
 </script>
 
 <Toast message={toastMessage} />
@@ -1248,6 +1590,15 @@ function handlePeerConnected(e) {
       onRequestWritePermission={handleRequestWritePermission}
       onGrantWritePermission={handleGrantWritePermission}
       onDenyWritePermission={handleDenyWritePermission}
+    />
+
+    <IPFSAnalyzer 
+      {showIPFSDetails}
+      {ipfsAnalysis}
+      {formatBytes}
+      {formatPeerId}
+      onRefreshIPFSAnalysis={analyzeIPFS}
+      onToggleShow={() => { showIPFSDetails = !showIPFSDetails; if (showIPFSDetails && !ipfsAnalysis) analyzeIPFS(); }}
     />
 
     <DatabaseManager 

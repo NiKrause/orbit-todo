@@ -620,6 +620,27 @@ export async function testWritePermissionDatabaseConnection() {
 }
 
 /**
+ * Get my own write permission database instance
+ */
+export function getMyWritePermissionDatabase() {
+  return myWritePermissionDB
+}
+
+/**
+ * Get my own write permission database address
+ */
+export function getMyWritePermissionDatabaseAddress() {
+  return myWritePermissionDB?.address?.toString() || null
+}
+
+/**
+ * Get my own write permission database name
+ */
+export function getMyWritePermissionDatabaseName() {
+  return myWritePermissionDB?.dbName || null
+}
+
+/**
  * Ensure write permission database is open and ready
  */
 export async function ensureWritePermissionDatabaseOpen() {

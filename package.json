@@ -28,6 +28,7 @@
 		"@chainsafe/libp2p-noise": "^16.1.4",
 		"@chainsafe/libp2p-yamux": "^7.0.4",
 		"@helia/unixfs": "^5.0.3",
+		"@ipld/dag-cbor": "^9.2.4",
 		"@ipshipyard/libp2p-auto-tls": "^1.0.0",
 		"@libp2p/autonat": "^2.0.37",
 		"@libp2p/bootstrap": "^11.0.46",
@@ -82,6 +83,7 @@
 		"key-did-resolver": "^4.0.0",
 		"libp2p": "^2.9.0",
 		"libp2p-crypto": "^0.21.2",
+		"multiformats": "^13.3.7",
 		"uint8arrays": "^5.1.0",
 		"vite-plugin-node-polyfills": "^0.24.0",
 		"vite-plugin-wasm": "^3.4.1"
