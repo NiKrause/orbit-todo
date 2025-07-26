@@ -21,6 +21,7 @@ import { uPnPNAT } from '@libp2p/upnp-nat'
 import { prometheusMetrics } from '@libp2p/prometheus-metrics'
 import { initializeStorage, closeStorage } from './services/storage.js'
 import { createExpressServer, startExpressServer } from './services/express.js'
+import { PinningService } from './services/pinning.js'
 
 // Load environment variables
 config()
@@ -270,10 +271,92 @@ async function listDatastoreKeys() {
   }
 }
 
+// Initialize the PinningService
+const pinningService = new PinningService()
+
 // Start the server
 console.log('⏳ Starting libp2p node...')
 await server.start()
 console.log('✅ Libp2p node started successfully')
+
+// Initialize PinningService with libp2p and storage
+console.log('⏳ Initializing PinningService...')
+await pinningService.initialize(server, datastore, blockstore)
+console.log('✅ PinningService initialized successfully')
+
+// Setup OrbitDB pinning event listeners
+console.log('🔗 Setting up OrbitDB pinning event listeners...')
+
+// Debug: List all available events on pubsub
+console.log('🔍 Available pubsub events:', Object.getOwnPropertyNames(server.services.pubsub).filter(prop => prop.includes('Event') || prop.includes('on')))
+
+// Listen to subscription-change events with debugging
+server.services.pubsub.addEventListener('subscription-change', (event) => {
+  console.log('🔔 Raw subscription-change event:', JSON.stringify(event, null, 2))
+  
+  // Try different event structures
+  const topic = event.detail?.topic || event.topic || event.detail?.subscription?.topic
+  const subscriptions = event.detail?.subscriptions || event.subscriptions
+  
+  if (topic) {
+    console.log('📡 Processing subscription change for topic:', topic)
+    pinningService.handleSubscriptionChange(topic)
+  }
+  
+  if (subscriptions && Array.isArray(subscriptions)) {
+    subscriptions.forEach(sub => {
+      const subTopic = sub.topic || sub
+      if (subTopic) {
+        console.log('📡 Processing subscription change for topic:', subTopic)
+        pinningService.handleSubscriptionChange(subTopic)
+      }
+    })
+  }
+})
+
+// Listen to gossipsub subscription-change events as well
+server.services.pubsub.addEventListener('gossipsub:subscription-change', (event) => {
+  console.log('🔔 Raw gossipsub subscription-change event:', JSON.stringify(event, null, 2))
+  
+  const topic = event.detail?.topic || event.topic
+  if (topic) {
+    console.log('📡 Processing gossipsub subscription change for topic:', topic)
+    pinningService.handleSubscriptionChange(topic)
+  }
+})
+
+// Listen to pubsub messages with debugging
+server.services.pubsub.addEventListener('message', (event) => {
+  const message = event.detail
+  if (message && message.topic) {
+    if (message.topic.startsWith('/orbitdb/')) {
+      console.log('💬 OrbitDB pubsub message received:', {
+        topic: message.topic,
+        from: message.from?.toString()?.slice(0, 12) + '...',
+        dataLength: message.data?.length
+      })
+    }
+    pinningService.handlePubsubMessage(message)
+  }
+})
+
+// Also listen for peer joining/leaving topics (gossipsub specific)
+server.services.pubsub.addEventListener('gossipsub:join', (event) => {
+  const topic = event.detail?.topic || event.topic
+  if (topic && topic.startsWith('/orbitdb/')) {
+    console.log('👥 Peer joined OrbitDB topic:', topic)
+    pinningService.handleSubscriptionChange(topic)
+  }
+})
+
+server.services.pubsub.addEventListener('gossipsub:leave', (event) => {
+  const topic = event.detail?.topic || event.topic
+  if (topic && topic.startsWith('/orbitdb/')) {
+    console.log('👥 Peer left OrbitDB topic:', topic)
+  }
+})
+
+console.log('✅ OrbitDB pinning event listeners setup completed')
 
 // Run datastore diagnostics
 console.log('🔍 Running datastore diagnostics...')
@@ -286,6 +369,45 @@ const peerStats = {
   connectionsByTransport: {},
   peakConnections: 0
 }
+
+// Debug: List all available events on the server
+console.log('🔍 Debugging available events on server:')
+const serverEvents = []
+let obj = server
+while (obj) {
+  const props = Object.getOwnPropertyNames(obj)
+  props.forEach(prop => {
+    if (prop.includes('Event') || prop.includes('addEventListener') || prop.includes('on')) {
+      serverEvents.push(prop)
+    }
+  })
+  obj = Object.getPrototypeOf(obj)
+}
+console.log('Server events:', [...new Set(serverEvents)])
+
+// Add a catch-all event listener to see what events are actually firing
+const originalAddEventListener = server.addEventListener.bind(server)
+server.addEventListener = function(event, handler) {
+  console.log(`🎯 Registering listener for event: ${event}`)
+  return originalAddEventListener(event, handler)
+}
+
+// Test: Add listeners for common libp2p events to see which ones fire
+const testEvents = [
+  'peer:discovery',
+  'peer:connect', 
+  'peer:disconnect',
+  'connection:open',
+  'connection:close',
+  'peer:join',
+  'peer:leave'
+]
+
+testEvents.forEach(eventName => {
+  server.addEventListener(eventName, (event) => {
+    console.log(`🔥 Event fired: ${eventName}`)
+  })
+})
 
 server.addEventListener('peer:discovery', async (event) => {
   const { id: peerId, multiaddrs } = event.detail
@@ -391,7 +513,7 @@ console.log('  Multiaddrs:')
 server.getMultiaddrs().forEach(ma => console.log(`    ${ma.toString()}`))
 
 // Create and start HTTP API server using Express service
-const app = createExpressServer(server, connectedPeers, peerStats)
+const app = createExpressServer(server, connectedPeers, peerStats, pinningService)
 let httpServer
 try {
   httpServer = await startExpressServer(app, httpPort, server)
@@ -415,6 +537,9 @@ const gracefulShutdown = async (signal) => {
       })
     }
     
+    console.log('⏳ Cleaning up PinningService...')
+    await pinningService.cleanup()
+    
     console.log('⏳ Stopping libp2p node...')
     await server.stop()
     
@@ -434,7 +559,12 @@ process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
 
 // Periodic status logging (every 5 minutes)
 setInterval(() => {
+  const pinningStats = pinningService.getStats()
   console.log(`📊 Status: ${connectedPeers.size} peers connected, ` +
               `${peerStats.totalConnections} total connections, ` +
               `${Math.round(process.uptime())}s uptime`)
+  console.log(`📌 Pinning: ${pinningStats.totalPinned} databases pinned, ` +
+              `${pinningStats.syncOperations} syncs, ` +
+              `${pinningStats.failedSyncs} failures, ` +
+              `queue: ${pinningStats.queueSize}/${pinningStats.queuePending}`)
 }, 5 * 60 * 1000)

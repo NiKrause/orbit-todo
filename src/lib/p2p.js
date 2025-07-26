@@ -33,10 +33,16 @@ let orbitdb = null
 let todoDB = null
 let relayDiscovery = null
 
-// Bootstrap relay address
-const RELAY_BOOTSTRAP_ADDR_DEV = '/ip4/127.0.0.1/tcp/4001/ws/p2p/12D3KooWAJjbRkp8FPF5MKgMU53aUTxWkqvDrs4zc1VMbwRwfsbE'
-const RELAY_BOOTSTRAP_ADDR = '/dns4/91-99-67-170.k51qzi5uqu5dl6dk0zoaocksijnghdrkxir5m4yfcodish4df6re6v3wbl6njf.libp2p.direct/tcp/4002/wss/p2p/12D3KooWPJYEZSwfmRL9SHehYAeQKEbCvzFu7vtKWb6jQfMSMb8W'
+// Get environment variables for relay bootstrap addresses
+const RELAY_BOOTSTRAP_ADDR_DEV = import.meta.env.VITE_RELAY_BOOTSTRAP_ADDR_DEV || '/ip4/127.0.0.1/tcp/4001/ws/p2p/12D3KooWAJjbRkp8FPF5MKgMU53aUTxWkqvDrs4zc1VMbwRwfsbE'
+const RELAY_BOOTSTRAP_ADDR_PROD = import.meta.env.VITE_RELAY_BOOTSTRAP_ADDR_PROD || '/dns4/91-99-67-170.k51qzi5uqu5dl6dk0zoaocksijnghdrkxir5m4yfcodish4df6re6v3wbl6njf.libp2p.direct/tcp/4002/wss/p2p/12D3KooWPJYEZSwfmRL9SHehYAeQKEbCvzFu7vtKWb6jQfMSMb8W'
 
+// Determine which relay address to use based on environment
+const isDevelopment = import.meta.env.DEV || import.meta.env.VITE_NODE_ENV === 'development'
+const RELAY_BOOTSTRAP_ADDR = isDevelopment ? RELAY_BOOTSTRAP_ADDR_DEV : RELAY_BOOTSTRAP_ADDR_PROD
+
+console.log(`🌍 Environment: ${isDevelopment ? 'Development' : 'Production'}`)
+console.log(`🔗 Using relay address: ${RELAY_BOOTSTRAP_ADDR}`)
 
 
 /**
@@ -301,9 +307,7 @@ async function initializeP2PWithTimeout() {
       ipfs: helia,
       id: 'todo-p2p-app',
       directory: './orbitdb-data',
-      AccessControllers: {
-        'ipfs': IPFSAccessController
-      }
+      AccessController: IPFSAccessController({ write: ['*'] })
     })
     console.log(`✅ OrbitDB created in ${Date.now() - orbitStartTime}ms`)
 
@@ -332,6 +336,7 @@ async function initializeP2PWithTimeout() {
     
     await discovery.startDiscovery(async (topic, peerId) => {
       try {
+        const peerIdStr = peerId.toString()
         
         discoveredOrbitDBTopics.set(topic, {
           peerId: peerIdStr,
@@ -1700,6 +1705,7 @@ export async function getTodoDatabase() {
       // Use IPFSAccessController with wildcard for open write access
       todoDB = await orbitdb.open('todos', {
         type: 'keyvalue',
+        sync: true,
         AccessController: IPFSAccessController({
           write: ['*'] // Allow any peer to write
         })
@@ -1713,31 +1719,9 @@ export async function getTodoDatabase() {
       
     } catch (error) {
       console.warn('⚠️ Failed to open with IPFSAccessController, trying legacy approach:', error.message);
-      
-      try {
-        // Fallback 1: Try with accessController object syntax
-        todoDB = await orbitdb.open('todos', {
-          type: 'keyvalue',
-          accessController: {
-            type: 'ipfs',
-            write: ['*']
-          }
-        });
-        
-        console.log('✅ Database opened with legacy accessController syntax');
-        
-      } catch (error2) {
-        console.warn('⚠️ Legacy syntax failed, trying no access controller:', error2.message);
-        
-        // Fallback 2: No access controller (defaults to public)
-        todoDB = await orbitdb.open('todos', {
-          type: 'keyvalue'
-          // No access controller = defaults to public access
-        });
-        
-        console.log('✅ Database opened with default access controller');
-      }
     }
+    
+    console.log('✅ Database opened with default access controller');
     
     setupDatabaseEventListeners();
   }

@@ -69,9 +69,10 @@ function prioritizeAddresses(addresses) {
  * @param {Object} server - The libp2p server instance
  * @param {Map} connectedPeers - Map of connected peers
  * @param {Object} peerStats - Peer statistics object
+ * @param {Object} pinningService - The pinning service instance
  * @returns {Object} Express app instance
  */
-export function createExpressServer(server, connectedPeers, peerStats) {
+export function createExpressServer(server, connectedPeers, peerStats, pinningService) {
   const app = express()
 
   // DoS Protection Middleware Configuration
@@ -273,6 +274,75 @@ export function createExpressServer(server, connectedPeers, peerStats) {
     }
   })
 
+  // Pinning Service Routes (if pinningService is available)
+  if (pinningService) {
+    // Get pinning service statistics
+    app.get('/pinning/stats', (req, res) => {
+      try {
+        const stats = pinningService.getStats()
+        res.json({
+          ...stats,
+          timestamp: new Date().toISOString()
+        })
+      } catch (error) {
+        res.status(500).json({
+          error: 'Failed to get pinning stats',
+          message: error.message
+        })
+      }
+    })
+
+    // Get list of pinned databases
+    app.get('/pinning/databases', (req, res) => {
+      try {
+        const databases = pinningService.getPinnedDatabases()
+        res.json({
+          databases,
+          total: databases.length,
+          timestamp: new Date().toISOString()
+        })
+      } catch (error) {
+        res.status(500).json({
+          error: 'Failed to get pinned databases',
+          message: error.message
+        })
+      }
+    })
+
+    // Manually trigger sync for a specific database address
+    app.post('/pinning/sync', express.json(), async (req, res) => {
+      const { dbAddress } = req.body
+      
+      if (!dbAddress) {
+        return res.status(400).json({
+          error: 'Database address is required',
+          example: { dbAddress: '/orbitdb/bafyreid...' }
+        })
+      }
+
+      try {
+        const result = await pinningService.syncAndPinDatabase(dbAddress)
+        res.json({
+          success: true,
+          dbAddress,
+          result,
+          timestamp: new Date().toISOString()
+        })
+      } catch (error) {
+        res.status(500).json({
+          success: false,
+          error: 'Failed to sync database',
+          message: error.message,
+          dbAddress
+        })
+      }
+    })
+
+    console.log('📌 Pinning service routes added to HTTP API')
+  } else {
+    console.log('⚠️  Pinning service not available - skipping pinning routes')
+  }
+
   return app
 }
 
@@ -297,6 +367,9 @@ export function startExpressServer(app, httpPort, server) {
       console.log(`  - Connected peers: http://localhost:${httpPort}/peers`)
       console.log(`  - Metrics: http://localhost:${httpPort}/metrics`)
       console.log(`  - Test pubsub: POST http://localhost:${httpPort}/test-pubsub`)
+      console.log(`  - Pinning stats: http://localhost:${httpPort}/pinning/stats`)
+      console.log(`  - Pinned databases: http://localhost:${httpPort}/pinning/databases`)
+      console.log(`  - Manual sync: POST http://localhost:${httpPort}/pinning/sync`)
       
       console.log(`\n✨ Enhanced Relay Server Ready!`)
       console.log(`   Peer ID: ${server.peerId.toString()}`)
