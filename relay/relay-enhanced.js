@@ -131,7 +131,7 @@ const libp2pOptions = {
   peerDiscovery: [
     pubsubPeerDiscovery({
       interval: 5000, // Check every 5 seconds (more frequent than original)
-      topics: ['todo._peer-discovery._p2p._pubsub'],
+      topics: (process.env.PUBSUB_TOPICS || 'todo._peer-discovery._p2p._pubsub').split(',').map(t => t.trim()), // Configurable topics
       listenOnly: false,
       emitSelf: true
     })

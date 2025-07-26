@@ -265,7 +265,7 @@ async function initializeP2PWithTimeout() {
       peerDiscovery: [
         pubsubPeerDiscovery({
           interval: 5000, // More frequent broadcasting
-          topics: ['todo._peer-discovery._p2p._pubsub'], // Match relay topic
+          topics: (import.meta.env.VITE_PUBSUB_TOPICS || 'todo._peer-discovery._p2p._pubsub').split(',').map(t => t.trim()), // Configurable topics
           listenOnly: false,
           emitSelf: true // Enable even when no peers are present initially
         })
@@ -331,19 +331,7 @@ async function initializeP2PWithTimeout() {
     })
     
     await discovery.startDiscovery(async (topic, peerId) => {
-      console.log(`🎯 [DISCOVERY] Automatically subscribing to discovered OrbitDB topic: ${topic} from peer: ${peerId}`)
       try {
-        await helia.libp2p.services.pubsub.subscribe(topic)
-        console.log(`✅ Successfully subscribed to OrbitDB topic: ${topic}`)
-        
-        // Store the discovered OrbitDB topic
-        const peerIdStr = peerId.toString()
-        console.log(`📝 [DEBUG] Storing OrbitDB topic discovery:`, {
-          peerIdStr,
-          topic,
-          peerMapBefore: Array.from(peerOrbitDbAddresses.keys()),
-          peerMapSizeBefore: peerOrbitDbAddresses.size
-        })
         
         discoveredOrbitDBTopics.set(topic, {
           peerId: peerIdStr,
@@ -353,12 +341,7 @@ async function initializeP2PWithTimeout() {
         
         // Also add to the legacy map for UI compatibility
         peerOrbitDbAddresses.set(peerIdStr, topic)
-        
-        console.log(`📝 [DEBUG] After storing discovery:`, {
-          peerMapAfter: Array.from(peerOrbitDbAddresses.keys()),
-          peerMapSizeAfter: peerOrbitDbAddresses.size,
-          topicForThisPeer: peerOrbitDbAddresses.get(peerIdStr)
-        })
+       
         
         // Update the reactive store
         updateDiscoveredDatabasesStore()

@@ -92,7 +92,7 @@ const server = await createLibp2p({
   peerDiscovery: [
     pubsubPeerDiscovery({
       interval: 10000, // Broadcast every 10 seconds
-      topics: ['todo._peer-discovery._p2p._pubsub'], // Use your app-specific topic
+      topics: (process.env.PUBSUB_TOPICS || 'todo._peer-discovery._p2p._pubsub').split(',').map(t => t.trim()), // Configurable topics
       listenOnly: false,
       emitSelf: true // Enable broadcasting even with no initial peers
     })
