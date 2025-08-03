@@ -1,8 +1,7 @@
 import { createOrbitDB, IPFSAccessController } from '@orbitdb/core'
 import { createHelia } from 'helia'
+import { CID } from 'multiformats/cid'
 import PQueue from 'p-queue'
-import { toString as uint8ArrayToString } from 'uint8arrays/to-string'
-import { fromString as uint8ArrayFromString } from 'uint8arrays/from-string'
 
 export class PinningService {
   constructor(options = {}) {
@@ -10,6 +9,7 @@ export class PinningService {
     this.pinnedDatabases = new Map() // Map of dbAddress -> { db, metadata }
     this.syncQueue = new PQueue({ concurrency: 2 })
     this.updateTimers = new Map() // Debouncing timers for update events
+    this.processedCIDs = new Map() // Map of dbAddress -> Set of processed CIDs to avoid duplicates
     this.metrics = {
       totalPinned: 0,
       syncOperations: 0,
@@ -33,21 +33,22 @@ export class PinningService {
    * Load allowed identity IDs from environment variables
    */
   loadAllowedIdentities() {
-    // Support multiple environment variable formats
-    const identityVars = [
-      'PINNING_ALLOWED_IDENTITIES',
-      'ORBITDB_ALLOWED_IDENTITIES', 
-      'ALLOWED_PEER_IDS',
-      'PINNING_IDENTITY_FILTER'
-    ]
+    const envValue = process.env.PINNING_ALLOWED_IDENTITIES
     
-    for (const varName of identityVars) {
-      const envValue = process.env[varName]
-      if (envValue) {
-        const identities = envValue.split(',').map(id => id.trim()).filter(Boolean)
-        identities.forEach(id => this.allowedIdentities.add(id))
-        this.log(`📋 Loaded ${identities.length} identities from ${varName}`, 'debug')
-      }
+    if (envValue) {
+      // Single pass processing: split, trim, filter, and add to Set
+      const identities = envValue
+        .split(',')
+        .reduce((acc, id) => {
+          const trimmed = id.trim()
+          if (trimmed) {
+            acc.push(trimmed)
+          }
+          return acc
+        }, [])
+      
+      identities.forEach(id => this.allowedIdentities.add(id))
+      this.log(`📋 Loaded ${identities.length} identities from PINNING_ALLOWED_IDENTITIES`, 'debug')
     }
     
     // If no specific pinning identities are configured, warn the user
@@ -351,6 +352,11 @@ export class PinningService {
       // Now count records after waiting for readiness
       const recordCount = await this.getRecordCount(db)
       
+      // Process existing CIDs during initial sync for documents databases
+      if (dbType === 'documents') {
+        await this.processExistingCIDs(db, dbAddress)
+      }
+      
       // Create enhanced database metadata
       const metadata = {
         name: db.name,
@@ -405,13 +411,187 @@ export class PinningService {
   }
 
   /**
+   * Process existing CIDs in a documents database during initial sync
+   */
+  async processExistingCIDs(db, dbAddress) {
+    try {
+      this.log(`🔍 Processing existing CIDs for ${db.name}...`, 'debug')
+      const processedCIDs = new Set()
+      
+      // Get all existing records
+      const records = await db.all()
+      if (Array.isArray(records)) {
+        for (const record of records) {
+          if (record && record.value) {
+            const cidField = record.value.cid || record.value.CID || record.value.Cid
+            if (cidField && typeof cidField === 'string' && !processedCIDs.has(cidField)) {
+              try {
+                this.log(`📌 Pinning existing CID: ${cidField}`, 'info')
+                await this.helia.pins.add(CID.parse(cidField))
+                processedCIDs.add(cidField)
+              } catch (cidError) {
+                this.log(`❌ Error pinning existing CID ${cidField}: ${cidError.message}`, 'error')
+              }
+            }
+          }
+        }
+      }
+      
+      // Store the processed CIDs
+      this.processedCIDs.set(dbAddress, processedCIDs)
+      this.log(`✅ Processed ${processedCIDs.size} existing CIDs for ${db.name}`, 'debug')
+      
+    } catch (error) {
+      this.log(`❌ Error processing existing CIDs for ${db.name}: ${error.message}`, 'error')
+    }
+  }
+
+  /**
+   * Get the current value of a document by key
+   */
+  async getDocumentValue(db, key) {
+    try {
+      const record = await db.get(key)
+      return record ? record[0] : null
+    } catch (error) {
+      this.log(`❌ Error retrieving document by key ${key}: ${error.message}`, 'error')
+      return null
+    }
+  }
+
+
+  /**
+   * Retrieve the previous PUT entry value for a given key before deletion using iterator
+   */
+  async getPreviousEntry(db, key) {
+    this.log(`🔍 Starting getPreviousEntry for key: ${key} in database: ${db.name}`, 'info')
+    
+    try {
+      // Use iterator approach for better performance
+      if (typeof db.iterator === 'function') {
+        this.log(`🔄 Using iterator for ${db.name}`, 'debug')
+        
+        // Create iterator and collect entries in reverse order
+        const entries = []
+        const iterator = db.log.iterator()
+        
+        for await (const entry of iterator) {
+          entries.unshift(entry) // Add to beginning to maintain reverse chronological order
+        }
+        
+        this.log(`📄 Found ${entries.length} total entries in log`, 'info')
+        
+        // Search in reverse chronological order (most recent first)
+        for (const entry of entries) {
+          this.log(`🔎 Checking entry: key=${entry.payload?.key}, op=${entry.payload?.op}, clock=${entry.clock?.time}`, 'debug')
+          
+          if (entry.payload?.key === key && entry.payload?.op === 'PUT') {
+            this.log(`✅ Found previous PUT entry for key: ${key} at clock time ${entry.clock?.time}`, 'info')
+            this.log(`📋 PUT entry value: ${JSON.stringify(entry.payload.value)}`, 'debug')
+            return entry.payload.value
+          }
+        }
+        this.log(`⚠️ No previous PUT entry found for key: ${key}`, 'warn')
+      }
+    } catch (error) {
+      this.log(`❌ Error retrieving previous entry for key ${key}: ${error.message}`, 'error')
+    }
+    
+    return null
+  }
+
+  /**
    * Set up event listeners for a database
    */
   setupDatabaseListeners(db, dbAddress, metadata) {
+    // Log all available events for debugging
+    this.log(`🔧 Setting up event listeners for ${db.name}`, 'debug')
+    
     // Handle database updates with debouncing
-    db.events.on('update', async () => {
-      this.log(`🔄 Database updated: ${db.name}`, 'debug')
+    db.events.on('update', async (entry) => {
+      this.log(`🔄 Database updated: ${db.name}`, 'info')
+      this.log(`📝 Raw update entry: ${JSON.stringify(entry)}`, 'debug')
       
+      // Check if this is a documents type database before processing CID fields
+      const dbType = this.getDatabaseType(db)
+      if (dbType === 'documents') {
+        try {
+          this.log(`🔍 Processing update entry for ${db.name}: ${JSON.stringify(entry?.payload || entry)}`, 'debug')
+          
+          const processedCIDs = this.processedCIDs.get(dbAddress) || new Set()
+          const operation = entry?.payload?.op
+          
+          this.log(`⚙️ Operation: ${operation}`, 'debug')
+          
+          // Handle DEL operations by fetching current document before deletion
+          if (operation === 'DEL') {
+            this.log(`🔍 Processing DEL operation for key: ${entry.payload.key}`, 'info')
+            const key = entry.payload.key
+            if (key) {
+              
+              this.log(`🔍 Fetching current document for key: ${key}`, 'debug')
+              const currentValue = await this.getPreviousEntry(db, key)
+              this.log(`🔍 Previous document value: ${JSON.stringify(currentValue)}`, 'debug')
+              
+              const cidField = currentValue?.cid || currentValue?.CID || currentValue?.Cid
+              this.log(`🔍 Extracted CID field: ${cidField}`, 'debug')
+              
+              if (cidField && typeof cidField === 'string') {
+                try {
+                  this.log(`📌 Unpinning CID from existing document: ${cidField}`, 'info')
+                  await this.helia.pins.rm(CID.parse(cidField))
+                  this.log(`✅ Successfully unpinned CID: ${cidField}`, 'debug')
+                  processedCIDs.delete(cidField)
+                  this.processedCIDs.set(dbAddress, processedCIDs)
+                } catch (cidError) {
+                  this.log(`❌ Error unpinning CID ${cidField}: ${cidError.message}`, 'error')
+                }
+              } else {
+                this.log(`⚠️ No CID field found in document for DEL operation. Document: ${JSON.stringify(currentValue)}`, 'warn')
+              }
+            } else {
+              this.log(`⚠️ No key found in DEL operation payload`, 'warn')
+            }
+          }
+          // Handle PUT/SET/ADD operations with CID in payload value  
+          else if (entry && entry.payload && entry.payload.value) {
+            const value = entry.payload.value
+            
+            this.log(`📋 Document value: ${JSON.stringify(value)}`, 'debug')
+            
+            // Look for CID fields (case insensitive)
+            const cidField = value.cid || value.CID || value.Cid
+            
+            if (cidField && typeof cidField === 'string') {
+              try {
+                if (!processedCIDs.has(cidField)) {
+                  if (operation === 'PUT' || operation === 'SET' || operation === 'ADD') {
+                    this.log(`📌 Pinning CID from document: ${cidField}`, 'info')
+                    await this.helia.pins.add(CID.parse(cidField))
+                    this.log(`✅ Successfully pinned CID: ${cidField}`, 'debug')
+                    processedCIDs.add(cidField)
+                    this.processedCIDs.set(dbAddress, processedCIDs)
+                  }
+                } else {
+                  this.log(`🔄 CID ${cidField} already processed for ${db.name}, skipping`, 'debug')
+                }
+              } catch (cidError) {
+                this.log(`❌ Error processing CID ${cidField}: ${cidError.message}`, 'error')
+              }
+            } else {
+              this.log(`ℹ️ No CID field found in document for ${db.name}. Available fields: ${Object.keys(value).join(', ')}`, 'debug')
+            }
+          } else {
+            this.log(`⚠️ Unexpected entry structure for ${db.name}: ${JSON.stringify(entry)}`, 'warn')
+          }
+          
+        } catch (eventError) {
+          this.log(`❌ Error processing update event for ${db.name}: ${eventError.message}`, 'error')
+        }
+      } else {
+        this.log(`ℹ️ Database ${db.name} is not a documents type (${dbType}), skipping CID processing`, 'debug')
+      }
+
       // Clear existing timer if it exists
       if (this.updateTimers.has(dbAddress)) {
         clearTimeout(this.updateTimers.get(dbAddress))
@@ -449,8 +629,47 @@ export class PinningService {
       this.log(`👤 Peer joined ${db.name}: ${peerStr.slice(0, 8)}...`, 'debug')
     })
 
+    // Enhanced write event logging
     db.events.on('write', async (address, entry) => {
-      this.log(`✍️  Write event in ${db.name}: ${address}`, 'debug')
+      this.log(`✍️  Write event in ${db.name}: ${address}`, 'info')
+      this.log(`📝 Write entry details: ${JSON.stringify(entry)}`, 'debug')
+    })
+    
+    // Log replicate events
+    db.events.on('replicate', async (address) => {
+      this.log(`🔄 Replicate event in ${db.name}: ${address}`, 'debug')
+    })
+    
+    // Log replicate.progress events
+    db.events.on('replicate.progress', async (address, hash, entry, progress, total) => {
+      this.log(`📊 Replicate progress in ${db.name}: ${progress}/${total}`, 'debug')
+    })
+    
+    // Log ready events
+    db.events.on('ready', async () => {
+      this.log(`✅ Database ${db.name} is ready`, 'debug')
+    })
+    
+    // Log close events
+    db.events.on('close', async () => {
+      this.log(`🔒 Database ${db.name} closed`, 'debug')
+    })
+    
+    // Log ALL events for debugging
+    const originalEmit = db.events.emit.bind(db.events)
+    db.events.emit = function(eventName, ...args) {
+      console.log(`[${new Date().toISOString()}] [PinningService] 🎯 EVENT '${eventName}' in ${db.name}:`, JSON.stringify(args, null, 2))
+      return originalEmit(eventName, ...args)
+    }
+    
+    // Also try to listen for any event using a wildcard approach
+    const events = ['update', 'write', 'replicate', 'replicate.progress', 'ready', 'close', 'join', 'error', 'peer.join', 'peer.left', 'load', 'load.progress', 'sync']
+    events.forEach(eventName => {
+      if (!db.events.listeners(eventName).length) {
+        db.events.on(eventName, (...args) => {
+          console.log(`[${new Date().toISOString()}] [PinningService] 📡 Caught '${eventName}' event in ${db.name}:`, JSON.stringify(args, null, 2))
+        })
+      }
     })
   }
 

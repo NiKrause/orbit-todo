@@ -63,6 +63,9 @@ const appendAnnounceArray = appendAnnounce
 const autoTLSEnabled = !process.env.DISABLE_AUTO_TLS && process.env.NODE_ENV === 'production'
 const stagingMode = process.env.STAGING === 'true'
 
+// UPnP configuration check - disabled by default
+const upnpEnabled = process.env.ENABLE_UPNP === 'true'
+
 console.log('🔧 Configuration:')
 console.log(`  - WebSocket port: ${wsPort}`)
 console.log(`  - TCP port: ${tcpPort}`)
@@ -75,6 +78,7 @@ if (appendAnnounceArray.length > 0) {
   console.log(`  - Additional announce addresses: ${appendAnnounceArray.join(', ')}`)
 }
 console.log(`  - AutoTLS: ${autoTLSEnabled ? (stagingMode ? 'enabled (staging)' : 'enabled (production)') : 'disabled'}`)
+console.log(`  - UPnP: ${upnpEnabled ? 'enabled' : 'disabled'}`)
 
 const libp2pOptions = {
   // Include private key and datastore
@@ -186,8 +190,8 @@ const libp2pOptions = {
       heartbeatInterval: Number(process.env.GOSSIP_HEARTBEAT_INTERVAL) || 1000
     }),
     
-    // UPnP NAT traversal
-    uPnPNAT: uPnPNAT(),
+    // UPnP NAT traversal - only enabled if explicitly set
+    ...(upnpEnabled && { uPnPNAT: uPnPNAT() }),
     
     // Enhanced circuit relay server configuration
     relay: circuitRelayServer({

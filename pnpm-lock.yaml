@@ -182,6 +182,9 @@ importers:
       libp2p-crypto:
         specifier: ^0.21.2
         version: 0.21.2
+      multiformats:
+        specifier: ^13.3.7
+        version: 13.3.7
       p-queue:
         specifier: ^8.1.0
         version: 8.1.0
