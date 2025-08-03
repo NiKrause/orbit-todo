@@ -33,13 +33,14 @@ let orbitdb = null
 let todoDB = null
 let relayDiscovery = null
 
-// Get environment variables for relay bootstrap addresses
 const RELAY_BOOTSTRAP_ADDR_DEV = import.meta.env.VITE_RELAY_BOOTSTRAP_ADDR_DEV || '/ip4/127.0.0.1/tcp/4001/ws/p2p/12D3KooWAJjbRkp8FPF5MKgMU53aUTxWkqvDrs4zc1VMbwRwfsbE'
 const RELAY_BOOTSTRAP_ADDR_PROD = import.meta.env.VITE_RELAY_BOOTSTRAP_ADDR_PROD || '/dns4/91-99-67-170.k51qzi5uqu5dl6dk0zoaocksijnghdrkxir5m4yfcodish4df6re6v3wbl6njf.libp2p.direct/tcp/4002/wss/p2p/12D3KooWPJYEZSwfmRL9SHehYAeQKEbCvzFu7vtKWb6jQfMSMb8W'
+const PUBSUB_TOPICS = (import.meta.env.VITE_PUBSUB_TOPICS || 'todo._peer-discovery._p2p._pubsub').split(',').map(t => t.trim())
 
 // Determine which relay address to use based on environment
 const isDevelopment = import.meta.env.DEV || import.meta.env.VITE_NODE_ENV === 'development'
-const RELAY_BOOTSTRAP_ADDR = isDevelopment ? RELAY_BOOTSTRAP_ADDR_DEV : RELAY_BOOTSTRAP_ADDR_PROD
+console.log('isDevelopment', isDevelopment)
+const RELAY_BOOTSTRAP_ADDR = (isDevelopment ? RELAY_BOOTSTRAP_ADDR_DEV : RELAY_BOOTSTRAP_ADDR_PROD).split(',').map(addr => addr.trim())
 
 console.log(`🌍 Environment: ${isDevelopment ? 'Development' : 'Production'}`)
 console.log(`🔗 Using relay address: ${RELAY_BOOTSTRAP_ADDR}`)
@@ -278,7 +279,7 @@ async function initializeP2PWithTimeout() {
       ],
       services: {
         identify: identify(),
-        bootstrap: bootstrap({list: [RELAY_BOOTSTRAP_ADDR]}),
+        bootstrap: bootstrap({list: RELAY_BOOTSTRAP_ADDR}),
         ping: ping(),
         dcutr: dcutr(),
         autonat: autoNAT(),
