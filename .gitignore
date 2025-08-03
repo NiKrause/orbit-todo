@@ -5,6 +5,8 @@ relay-datastore
 test-results
 orbitdb
 coverage
+test-helia*
+test-orbitdb*
 
 # Output
 .output
