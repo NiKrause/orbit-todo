@@ -16,7 +16,7 @@ import { autoNAT } from '@libp2p/autonat'
 import { keychain } from '@libp2p/keychain'
 import { autoTLS } from '@ipshipyard/libp2p-auto-tls'
 import { config } from 'dotenv'
-import { tls } from '@libp2p/tls'
+// import { tls } from '@libp2p/tls'
 import { uPnPNAT } from '@libp2p/upnp-nat'
 import { prometheusMetrics } from '@libp2p/prometheus-metrics'
 import { initializeStorage, closeStorage } from './services/storage.js'
@@ -141,7 +141,7 @@ const libp2pOptions = {
       emitSelf: true
     })
   ],
-  connectionEncrypters: [tls(), noise()],
+  connectionEncrypters: [noise()],
   connectionManager: {
     // Enhanced connection management from the reference
     inboundStreamProtocolNegotiationTimeout: 30000,
