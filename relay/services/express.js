@@ -134,6 +134,48 @@ export function createExpressServer(server, connectedPeers, peerStats, pinningSe
     next()
   })
 
+  // API Password Middleware
+  const apiPassword = process.env.API_PASSWORD
+  
+  // Middleware to protect routes with API password (except /metrics)
+  function protectWithPassword(req, res, next) {
+    // Skip authentication for /metrics endpoint
+    if (req.path === '/metrics') {
+      return next()
+    }
+    
+    // Skip authentication if no password is configured
+    if (!apiPassword) {
+      console.warn('⚠️ API_PASSWORD not configured - endpoints are unprotected!')
+      return next()
+    }
+    
+    const authHeader = req.headers.authorization
+    const expectedAuth = `Bearer ${apiPassword}`
+    
+    if (!authHeader || authHeader !== expectedAuth) {
+      console.log(`🚫 Unauthorized API access attempt to ${req.method} ${req.path} from ${req.ip}`)
+      return res.status(401).json({ 
+        error: 'Unauthorized', 
+        message: 'Invalid or missing API password. Include Authorization: Bearer <password> header.',
+        timestamp: new Date().toISOString()
+      })
+    }
+    
+    console.log(`🔐 Authenticated API access to ${req.method} ${req.path} from ${req.ip}`)
+    next()
+  }
+  
+  // Apply password protection to all routes
+  app.use(protectWithPassword)
+  
+  // Log API password status
+  if (apiPassword) {
+    console.log('🔐 API password protection enabled (except /metrics)')
+  } else {
+    console.warn('⚠️ API password protection disabled - configure API_PASSWORD in .env')
+  }
+
   app.use(express.json())
 
   // Enhanced multiaddrs endpoint with address prioritization and refresh
@@ -338,6 +380,45 @@ export function createExpressServer(server, connectedPeers, peerStats, pinningSe
       }
     })
 
+    // Drop (remove) a pinned database by address
+    app.delete('/pinning/database', express.json(), async (req, res) => {
+      const { dbAddress } = req.body
+      
+      if (!dbAddress) {
+        return res.status(400).json({
+          error: 'Database address is required',
+          example: { dbAddress: '/orbitdb/bafyreid...' }
+        })
+      }
+
+      try {
+        const result = await pinningService.dropDatabase(dbAddress)
+        res.json({
+          success: true,
+          message: 'Database dropped successfully',
+          ...result,
+          timestamp: new Date().toISOString()
+        })
+      } catch (error) {
+        // Handle the case where database is not pinned
+        if (error.message.includes('not currently pinned')) {
+          return res.status(404).json({
+            success: false,
+            error: 'Database not found',
+            message: error.message,
+            dbAddress
+          })
+        }
+        
+        res.status(500).json({
+          success: false,
+          error: 'Failed to drop database',
+          message: error.message,
+          dbAddress
+        })
+      }
+    })
+
     console.log('📌 Pinning service routes added to HTTP API')
   } else {
     console.log('⚠️  Pinning service not available - skipping pinning routes')
@@ -360,16 +441,23 @@ export function startExpressServer(app, httpPort, server) {
         return
       }
 
+      const apiPassword = process.env.API_PASSWORD
+      
       console.log(`\n🌐 HTTP API Server:`)
       console.log(`  - Running on port: ${httpPort}`)
+      console.log(`  - Authentication: ${apiPassword ? '🔐 Protected (except /metrics)' : '⚠️ Unprotected'}`)
+      if (apiPassword) {
+        console.log(`  - Auth Header: Authorization: Bearer ${apiPassword}`)
+      }
       console.log(`  - Multiaddrs: http://localhost:${httpPort}/multiaddrs`)
       console.log(`  - Health check: http://localhost:${httpPort}/health`)
       console.log(`  - Connected peers: http://localhost:${httpPort}/peers`)
-      console.log(`  - Metrics: http://localhost:${httpPort}/metrics`)
+      console.log(`  - Metrics: http://localhost:${httpPort}/metrics (public)`)
       console.log(`  - Test pubsub: POST http://localhost:${httpPort}/test-pubsub`)
       console.log(`  - Pinning stats: http://localhost:${httpPort}/pinning/stats`)
       console.log(`  - Pinned databases: http://localhost:${httpPort}/pinning/databases`)
       console.log(`  - Manual sync: POST http://localhost:${httpPort}/pinning/sync`)
+      console.log(`  - Drop database: DELETE http://localhost:${httpPort}/pinning/database`)
       
       console.log(`\n✨ Enhanced Relay Server Ready!`)
       console.log(`   Peer ID: ${server.peerId.toString()}`)

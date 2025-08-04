@@ -318,17 +318,6 @@ server.services.pubsub.addEventListener('subscription-change', (event) => {
   }
 })
 
-// Listen to gossipsub subscription-change events as well
-server.services.pubsub.addEventListener('gossipsub:subscription-change', (event) => {
-  console.log('🔔 Raw gossipsub subscription-change event:', JSON.stringify(event, null, 2))
-  
-  const topic = event.detail?.topic || event.topic
-  if (topic) {
-    console.log('📡 Processing gossipsub subscription change for topic:', topic)
-    pinningService.handleSubscriptionChange(topic)
-  }
-})
-
 // Listen to pubsub messages with debugging
 server.services.pubsub.addEventListener('message', (event) => {
   const message = event.detail
@@ -341,22 +330,6 @@ server.services.pubsub.addEventListener('message', (event) => {
       })
     }
     pinningService.handlePubsubMessage(message)
-  }
-})
-
-// Also listen for peer joining/leaving topics (gossipsub specific)
-server.services.pubsub.addEventListener('gossipsub:join', (event) => {
-  const topic = event.detail?.topic || event.topic
-  if (topic && topic.startsWith('/orbitdb/')) {
-    console.log('👥 Peer joined OrbitDB topic:', topic)
-    pinningService.handleSubscriptionChange(topic)
-  }
-})
-
-server.services.pubsub.addEventListener('gossipsub:leave', (event) => {
-  const topic = event.detail?.topic || event.topic
-  if (topic && topic.startsWith('/orbitdb/')) {
-    console.log('👥 Peer left OrbitDB topic:', topic)
   }
 })
 
@@ -373,45 +346,6 @@ const peerStats = {
   connectionsByTransport: {},
   peakConnections: 0
 }
-
-// Debug: List all available events on the server
-console.log('🔍 Debugging available events on server:')
-const serverEvents = []
-let obj = server
-while (obj) {
-  const props = Object.getOwnPropertyNames(obj)
-  props.forEach(prop => {
-    if (prop.includes('Event') || prop.includes('addEventListener') || prop.includes('on')) {
-      serverEvents.push(prop)
-    }
-  })
-  obj = Object.getPrototypeOf(obj)
-}
-console.log('Server events:', [...new Set(serverEvents)])
-
-// Add a catch-all event listener to see what events are actually firing
-const originalAddEventListener = server.addEventListener.bind(server)
-server.addEventListener = function(event, handler) {
-  console.log(`🎯 Registering listener for event: ${event}`)
-  return originalAddEventListener(event, handler)
-}
-
-// Test: Add listeners for common libp2p events to see which ones fire
-const testEvents = [
-  'peer:discovery',
-  'peer:connect', 
-  'peer:disconnect',
-  'connection:open',
-  'connection:close',
-  'peer:join',
-  'peer:leave'
-]
-
-testEvents.forEach(eventName => {
-  server.addEventListener(eventName, (event) => {
-    console.log(`🔥 Event fired: ${eventName}`)
-  })
-})
 
 server.addEventListener('peer:discovery', async (event) => {
   const { id: peerId, multiaddrs } = event.detail

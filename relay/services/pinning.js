@@ -889,6 +889,79 @@ export class PinningService {
   }
 
   /**
+   * Drop (remove) a pinned database by address
+   */
+  async dropDatabase(dbAddress) {
+    this.log(`🗑️ Dropping database: ${dbAddress}`, 'info')
+    
+    const pinnedDB = this.pinnedDatabases.get(dbAddress)
+    if (!pinnedDB) {
+      const error = `Database ${dbAddress} is not currently pinned`
+      this.log(`⚠️ ${error}`, 'warn')
+      throw new Error(error)
+    }
+    
+    const { db, metadata } = pinnedDB
+    
+    try {
+      // Clear any pending update timers for this database
+      if (this.updateTimers.has(dbAddress)) {
+        clearTimeout(this.updateTimers.get(dbAddress))
+        this.updateTimers.delete(dbAddress)
+        this.log(`🕰️ Cleared update timer for ${dbAddress}`, 'debug')
+      }
+      
+      // If it's a documents database, unpin all associated CIDs
+      const dbType = this.getDatabaseType(db)
+      if (dbType === 'documents') {
+        const processedCIDs = this.processedCIDs.get(dbAddress)
+        if (processedCIDs && processedCIDs.size > 0) {
+          this.log(`📌 Unpinning ${processedCIDs.size} CIDs for ${dbAddress}`, 'info')
+          
+          for (const cidString of processedCIDs) {
+            try {
+              await this.helia.pins.rm(CID.parse(cidString))
+              this.log(`✅ Unpinned CID: ${cidString}`, 'debug')
+            } catch (cidError) {
+              this.log(`⚠️ Error unpinning CID ${cidString}: ${cidError.message}`, 'warn')
+            }
+          }
+          
+          // Clear the processed CIDs for this database
+          this.processedCIDs.delete(dbAddress)
+        }
+      }
+      
+      // Close the database
+      if (db && typeof db.close === 'function') {
+        await db.close()
+        this.log(`🔒 Closed database: ${metadata.name}`, 'debug')
+      }
+      
+      // Remove from pinned databases map
+      this.pinnedDatabases.delete(dbAddress)
+      
+      // Update metrics
+      this.metrics.totalPinned = Math.max(0, this.metrics.totalPinned - 1)
+      
+      this.log(`✅ Successfully dropped database: ${metadata.name} (${dbAddress})`, 'info')
+      this.log(`📊 Remaining pinned databases: ${this.pinnedDatabases.size}`, 'debug')
+      
+      return {
+        success: true,
+        dbAddress,
+        name: metadata.name,
+        recordCount: metadata.recordCount,
+        droppedAt: new Date().toISOString()
+      }
+      
+    } catch (error) {
+      this.log(`❌ Error dropping database ${dbAddress}: ${error.message}`, 'error')
+      throw error
+    }
+  }
+
+  /**
    * Enhanced logging method with levels
    */
   log(message, level = 'info') {
